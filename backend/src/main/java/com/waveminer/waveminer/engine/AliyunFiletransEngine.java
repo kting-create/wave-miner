@@ -207,7 +207,8 @@ public class AliyunFiletransEngine implements TranscriptionEngine {
         EngineHttpClient.EngineHttpResponse resp = http.send(
                 HttpRequest.newBuilder(URI.create(url)).timeout(props.engineHttpTimeout()).GET().build());
         if (resp.statusCode() != 200) {
-            throw new EngineException("下载转写结果失败（HTTP " + resp.statusCode() + "）");
+            throw new EngineException("下载转写结果失败（HTTP " + resp.statusCode() + "）。"
+                    + "原始响应已存档到 engine_raw/", resp.body());
         }
         return resp.body();
     }

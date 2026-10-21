@@ -198,6 +198,43 @@ class AliyunFiletransEngineTest {
     }
 
     @Test
+    void downloadFailureCarriesRawResponseAndArchiveHint() throws Exception {
+        WireMockServer wire = new WireMockServer(WireMockConfiguration.options().dynamicPort());
+        wire.start();
+        try {
+            wire.stubFor(get(urlMatching("/api/v1/uploads.*"))
+                    .willReturn(aResponse().withBody(hermeticPolicy(wire))));
+            wire.stubFor(post(urlEqualTo("/upload")).willReturn(aResponse().withStatus(200)));
+            wire.stubFor(post(urlEqualTo("/api/v1/services/audio/asr/transcription"))
+                    .willReturn(aResponse().withBody(String.format(SUBMIT_OK, "task-3"))));
+            wire.stubFor(post(urlEqualTo("/api/v1/tasks/task-3"))
+                    .willReturn(aResponse().withBody("""
+                            {"output":{"task_id":"task-3","task_status":"SUCCEEDED",
+                              "results":[{"file_url":"oss://x/a.m4a","subtask_status":"SUCCEEDED",
+                                "transcription_url":"%s/result.json"}]}}
+                            """.formatted(wire.baseUrl()))));
+            // 5xx 会被 EngineHttpClient 重试层拦截，downloadResult 非 200 分支由 4xx 触发
+            wire.stubFor(get(urlEqualTo("/result.json"))
+                    .willReturn(aResponse().withStatus(404).withBody("oss-error")));
+
+            AliyunFiletransEngine engine = engine(wire, props(wire));
+            Path audio = tmpDir.resolve("d.m4a");
+            Files.writeString(audio, "x");
+
+            assertThatThrownBy(() -> engine.transcribe(audio, TranscribeOptions.of("auto", false),
+                    ProgressCallback.noop()))
+                    .isInstanceOfSatisfying(EngineException.class, e -> {
+                        assertThat(e.getMessage())
+                                .contains("下载转写结果失败")
+                                .contains("原始响应已存档到 engine_raw/");
+                        assertThat(e.getRawResponse()).isNotNull().contains("oss-error");
+                    });
+        } finally {
+            wire.stop();
+        }
+    }
+
+    @Test
     void missingKeyFailsEarly() throws Exception {
         WireMockServer wire = new WireMockServer(WireMockConfiguration.options().dynamicPort());
         wire.start();
