@@ -35,6 +35,7 @@ public class ProcessRunner {
             }
         });
         reader.setDaemon(true);
+        reader.setName("process-reader-" + command.get(0));
         reader.start();
         boolean finished;
         try {
@@ -42,10 +43,12 @@ public class ProcessRunner {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             p.destroyForcibly();
+            p.descendants().forEach(ProcessHandle::destroyForcibly);
             throw new ProcessFailedException("进程等待被中断: " + command.get(0), e);
         }
         if (!finished) {
             p.destroyForcibly();
+            p.descendants().forEach(ProcessHandle::destroyForcibly);
             throw new ProcessTimeoutException("进程超时（" + timeout.toMillis() + "ms）: " + command.get(0));
         }
         try {
@@ -53,10 +56,12 @@ public class ProcessRunner {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             p.destroyForcibly();
+            p.descendants().forEach(ProcessHandle::destroyForcibly);
             throw new ProcessFailedException("进程输出读取被中断: " + command.get(0), e);
         }
         if (readError.get() != null) {
             p.destroyForcibly();
+            p.descendants().forEach(ProcessHandle::destroyForcibly);
             throw new UncheckedIOException(readError.get());
         }
         return new ProcessResult(p.exitValue(), buffer.toString(StandardCharsets.UTF_8));
