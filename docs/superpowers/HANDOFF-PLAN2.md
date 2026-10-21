@@ -1,69 +1,120 @@
-# wave-miner 会话交接（给下一个会话的完整状态）
+# wave-miner 会话交接（计划 2 执行至 T8 中断，待续 T9-T13）
 
-> 用途：新会话接续开发。本文档 + 规格书 + 计划 1 文档构成完整上下文，新会话无需考古 git 历史。
-> 最后更新：2026-10-21（M1+M2 完成并验收）
+> 用途：计划 2 在"任务 8 完成并审查通过"后中断，换机器续作。本文档 + 计划 2 文档（含计划全文）即可无损续作，无需考古 git 历史。
+> 最后更新：2026-10-21（T1-T8 完成并逐任务审查通过；T9-T13 未开始）
 
-## 0. 新会话工作约定（需求方明确的规则，必须遵守）
+## 0. 工作约定（需求方明确的规则，必须遵守）
 
-1. **以官方文档为准**：所有 API 设计/请求参数必须先查官方文档再实现，不得凭记忆编造；实现前未核对的必须在规格/计划里标注"实现期核对"。
-2. **细节不用反复确认**：需求方已授权"做一个好的产品给我"。决策自行做并在文档中记录裁定（Ruling）即可；只有不可逆/有副作用/每条路都是猜的情况才停下来问。
-3. **稳定、能用的质量标准**：个人项目，优先稳定运行与运行安全；错误信息中文。
-4. **跨平台要求**（新增）：后续要转到 **Windows 验证**，之后部署到 **Linux 服务器**。新代码/测试必须双平台可用；详见规格 §14 与 README 的 Windows/Linux 章节。
+1. **以官方文档为准**：所有 API 设计/请求参数必须先查官方文档再实现；计划 2 涉及的 API 已全部核对完毕（见计划文档"官方 API 核对结论"章节），实现时以该章节为准。
+2. **细节不用反复确认**：自行裁定并记录 Ruling；只有不可逆/有副作用/每条路都是猜才停下来问。
+3. **稳定、能用的质量标准**：个人项目，优先稳定运行；错误信息一律中文。
+4. **跨平台**：新代码/测试双平台可用（Windows 验证/Linux 部署）；测试禁止仅依赖 Unix 命令；外部进程走 `ProcessRunner`。
 5. JDK 21 + 虚拟线程；不使用 Lombok。
+6. **执行方式**：用 superpowers:subagent-driven-development 逐任务执行（每任务 TDD + 独立审查 + conventional commit，一次提交一个可运行状态）。
 
-## 1. 项目现状
+## 1. 当前进度（计划 2 共 13 任务）
 
-- 仓库：`/Users/kting/code/wave-miner`，分支 `main`，全部提交作者已统一为 `kting <2551416075@qq.com>`（2026-10-21 filter-branch 重写过一次；此后新增提交自动用该身份）。
-- 已交付 **M1+M2（计划 1，12 任务全部完成、每任务经审查）**：
-  - 后端：Spring Boot 4.1.1 + Java 21（虚拟线程）+ SQLite。任务流水线（DOWNLOAD / AUDIO_EXTRACT 两阶段已实现；TRANSCRIBE 是计划 2）、`TaskRunner`（虚拟线程+Semaphore 并发限流、in-flight 守卫、retry 从首个非 DONE stage 续跑、协作式取消会杀外部进程树）、`ProcessRunner`（并发排空输出、超时/取消杀进程树）、`ArtifactStore`（产物存储+路径安全）、REST API（任务 CRUD / 产物 Range 下载 / SSE 尚未做 / `X-Access-Token` 或 `?token=` 鉴权 / 统一中文异常）、工具健康检查（按工具选 `-version`/`--version`）。
-  - 前端：Vue 3 + Vite + TS + Element Plus。新建任务（URL/上传切换+功能勾选）、任务列表、任务详情（产物预览/下载）。轮询刷新（SSE 是计划 2）。
-  - 测试：后端 68 全过；前端 vitest 4 全过 + `vue-tsc && vite build` 干净。
-  - 真机验收通过：真实 ffmpeg 9.0.2 + yt-dlp 2026.08.19（brew 已装）；上传→提取音频、直链→下载+提取（23MB/46.6s）、B站下载、kill -9 重启恢复、401/200 令牌、Range 206。
-- 打包：`java -jar backend/target/wave-miner-0.0.1-SNAPSHOT.jar` 自包含前端；`-P '!frontend'` 跳过前端构建。
+**已完成 T1-T8（每任务经独立审查，全部 Approved）**，全量后端测试 **117 个全部通过**（`cd backend && ./mvnw -q test`）。前端未动（T10/T11 未开始）。
 
-## 2. 关键文档（先读这三个）
+| 任务 | 内容 | 提交 |
+|---|---|---|
+| 计划文档 | 计划 2 全文（含官方 API 核对结论、14 条 Rulings、13 任务详细步骤与代码） | `4a65762` |
+| T1 | 设置存储 app_setting + GET/PUT /api/settings（脱敏、env 兜底、CORS+PUT） | `daa7e76` |
+| T2 | 转写引擎 SPI 类型 + EngineRegistry + GET /api/engines | `306cacf` |
+| T3 | 任务模型扩展（engine_id/language/diarize 列 + SchemaMigrator 迁移 + 创建校验） | `aed2486` |
+| T4 | TranscriptFormat（json/srt/txt）+ SegmentMerger（<800ms 合并） | `c484639` |
+| T5 | AppProperties 转写配置 + FfmpegService.detectSilences/cutAudio + AudioSegmenter | `b53db0e` |
+| T6 | EngineHttpClient（超时/重试）+ MultipartBuilder + MiniMax 引擎（WireMock 全流程） | `941dfe6` |
+| T7 | TaskEventPublisher + TaskRunner 事件埋点 + TranscribeStage + 产物白名单/MIME | `dce5bc0` |
+| T8 | 阿里云百炼 filetrans 引擎（上传凭证→OSS→提交→轮询→结果归一化） | `c3eef9e` + fix `6558d67` |
 
-| 文档 | 内容 |
-|---|---|
-| `docs/superpowers/specs/2026-10-21-wave-miner-design.md` | 设计规格（已确认）。**§5 转写引擎层、§9 前端、§13 实现期核对清单、§14 跨平台** 是计划 2 的输入 |
-| `docs/superpowers/plans/2026-10-21-wave-miner-plan1-m1m2.md` | 计划 1（已执行完，接口定义可当参考书用：TaskRepository/ArtifactStore/ProcessRunner/引擎 SPI 等 Interfaces 块） |
-| `README.md` | 运行/配置/Windows/Linux 部署 |
+**T8 唯一一次修复**：`downloadResult` 非 200 路径补 raw body + "原始响应已存档到 engine_raw/"（复审 ADDRESSED、无新破坏）。
 
-## 3. 计划 2 的范围（下一步要做的）
+**重要提醒**：T6 实现者报告里写的 "114 tests" 是误计；T7 完成时实测 110、T8 完成时 117。以 Maven 汇总行为准。
 
-**M3+M4+M5：转写引擎层 + TRANSCRIBE stage + SSE + 时间轴对照 UI**
+## 2. 剩余工作（T9-T13，以计划文档任务全文为准）
 
-1. **TranscriptionEngine SPI**（规格 §5.1）：`id()/info()/transcribe(mediaFile, options, progress)`；统一句级输出 `[{startMs,endMs,text,speaker?}]`；引擎原始响应存 `data/tasks/{id}/engine_raw/`。
-2. **MiniMax 引擎**（已核实官方 OpenAPI，规格 §5.2）：`POST {baseUrl}/v1/speech_to_text`，Bearer，multipart，`model=asr-1.0`，header `language`(BCP-47，空=混合)，`response_format=verbose_json`，`timestamp_level=sentence`；限制 ≤500s/≤50MB；国际站 `https://api.minimax.io`，中国站 `https://api.minimaxi.com`（baseUrl 可配，默认中国站——中国站字段细节实现期以 platform.minimax.cn 文档核对）。文档：https://platform.minimax.io/docs/api-reference/speech-to-text
-3. **阿里云百炼引擎**（已核实官方 REST，规格 §5.3）：默认模型 `qwen-audio-3.0-asr-flash-filetrans`（≤12h/2GB，说话人分离/热词/prompt），备选 `paraformer-v2`。流程：DashScope 文件上传凭证拿临时公网 URL → `POST /api/v1/services/audio/asr/transcription`（`X-DashScope-Async: enable`）→ 轮询 `POST /api/v1/tasks/{task_id}` → 下载 `transcription_url` JSON → 归一化 `transcripts[].sentences[]`（begin/end ms、words、speaker_id）。**本地文件必须先走上传凭证接口**（API 只收公网 URL）；上传凭证与 filetrans 请求字段实现期以官方文档+官方示例库核对：https://help.aliyun.com/zh/model-studio/paraformer-recorded-speech-recognition-restful-api 、 https://help.aliyun.com/zh/model-studio/non-realtime-speech-recognition-user-guide 、 https://github.com/aliyun/alibabacloud-bailian-speech-demo （有 Java 示例）
-4. **超长音频分片**（规格 §5.5，MiniMax 必需）：ffmpeg `silencedetect` 静音切分 → 分片转写 → 时间戳偏移归并（<800ms 间隙合并）。
-5. **三种产物**：`transcript.json`（segments 数组）、`transcript.srt`、`transcript.txt`（[mm:ss] 前缀）；允许的名字需在 `ArtifactStore.isAllowedArtifactName` 加白名单（transcript.* / engine_raw/**），同步检查 `TaskController` Range 下载的 MIME 映射。
-6. **前端**：新建任务页加 TRANSCRIBE 勾选卡（引擎选择数据源 `GET /api/engines` 需新实现）+ 语言选择；详情页时间轴对照（媒体播放器 currentTime ↔ 分段高亮 双向联动）；SSE 进度（`GET /api/tasks/{id}/events`）替代轮询（保留轮询兜底）。
-7. **设置存储**：API key 存 SQLite（`app_setting` 表）或环境变量；`GET/PUT /api/settings` 返回脱敏。引擎选择/语言持久化为任务字段。
+计划文档：`docs/superpowers/plans/2026-10-21-wave-miner-plan2-m3m4m5.md`（已提交，每个任务都有完整步骤、测试代码、实现代码与 Interfaces 块）。
 
-**计划 3（之后）**：M6——OpenAI 兼容模板引擎（探索更高质引擎：SiliconFlow SenseVoice / Groq Whisper 等）、设置页完善、小米 MiMo（未查到公开 ASR API，保持插槽）、访问令牌管理页。
+- **T9 SSE 进度接口**：`api/TaskSseRegistry`（订阅/广播/终态 complete/15s 心跳）+ `api/TaskSseController`（`GET /api/tasks/{id}/events`，404 校验）。计划 Task 9。注意：MockMvc SSE 测试若 asyncComplete 等待不稳，计划里有备选方案（registry 提供 `emitterCount` 做单元断言）。
+- **T10 前端一**：`frontend/src/api/types.ts`（EngineInfo/Transcript/TranscriptSegment/SettingView，TaskView +engineId/language/diarize）、`client.ts`（getEngines/getSettings/putSetting/sseUrl + artifactUrl 按 `/` 分段编码）、`utils/timeline.ts`（formatTimecode/findActiveSegment/clampSeekMs，先写 vitest）、`NewTaskView.vue` 转写卡（引擎/语言/说话人分离，configured=false 警告）。计划 Task 10。
+- **T11 前端二**：`TaskDetailView.vue` 时间轴对照（媒体播放器 timeupdate ↔ 分段高亮双向联动、点击段落 seek）+ SSE 订阅（EventSource + `?token=`，终态关闭，onerror 回退 2s 轮询）+ engine_raw 查看器 dialog。计划 Task 11。
+- **T12 文档与打包**：README 转写章节（计划里已给全文）+ `npm run build` + `./mvnw -q package -DskipTests` + jar 冒烟（/api/engines、/api/settings）。计划 Task 12。
+- **T13 全量验收**：全量测试 + **真机验收（需要真实 MiniMax 中国站 / 阿里云百炼 API key，见 §5）** + 修复 + 更新本 HANDOFF 为完成态。计划 Task 13 有 11 项手工验收清单。
 
-## 4. 平台注意事项（写代码时就考虑）
+## 3. 新机器续作指引（零上下文）
 
-- 新测试禁止仅依赖 Unix 命令（参考 `ProcessRunnerTest` 的 cmd/sh 分支写法）。
-- 外部工具调用都走 `ProcessRunner`（支持取消信号 3 参重载）；新工具（如 silencedetect）同样封装在 `media/`。
-- ffmpeg 9 注意：`--version` 已失效用 `-version`（健康检查已处理）； silencedetect/切分参数双平台一致，无坑。
-- Windows 文件锁：删除在途任务产物可能短暂失败，前端已有重试路径。
-- 转写 API 调用从服务器发起，注意超时与重试（指数退避）；引擎错误信息透传"原始响应已存档到 engine_raw/"。
-
-## 5. 新会话启动提示词（复制给新会话）
-
-```
-继续 wave-miner 项目（/Users/kting/code/wave-miner）。先读以下三份文档建立完整上下文，再开始工作：
-1. docs/superpowers/HANDOFF-PLAN2.md（会话交接：现状/约定/计划 2 范围/平台注意事项）
-2. docs/superpowers/specs/2026-10-21-wave-miner-design.md（设计规格，重点 §5/§9/§13/§14）
-3. docs/superpowers/plans/2026-10-21-wave-miner-plan1-m1m2.md（计划 1，已执行完毕，Interfaces 块作为接口参考）
-
-任务：按交接文档 §3 的范围，用 superpowers:writing-plans 编写"计划 2（M3+M4+M5：转写引擎 + SSE + 时间轴对照）"的实现计划（保存到 docs/superpowers/plans/），API 细节必须先核对交接文档列出的官方文档 URL（尤其是阿里云上传凭证接口与 MiniMax 中国站字段）。计划完成自查后，用 superpowers:subagent-driven-development 逐任务执行（每任务 TDD + 审查 + 提交）。遵守交接文档 §0 的工作约定：官方文档为准、细节自行裁定并记录 Ruling、错误信息中文、双平台（Windows 验证/Linux 部署）、JDK21 虚拟线程、不用 Lombok。完成后跑全量测试 + 真机验收（用真实 API key），最后更新 HANDOFF 文档状态。
+```bash
+git clone <repo-url> && cd wave-miner
+# 验证基线：
+cd backend && ./mvnw -q test        # 应 117 全绿
+cd ../frontend && npm install && npm run test && npm run build   # 应全绿
 ```
 
-## 6. 遗留 Minor 清单（不阻塞，计划 2/3 顺手可清）
+然后继续执行计划 2 的 T9-T13。推荐两种方式：
 
-- backend: insert+insertStages 无事务；catch(Exception) 不捕 Error；created_at TEXT 同秒混合精度排序；directDownload 每次新建 HttpClient；health 串行最坏 45s；ByteArrayOutputStream 无上限；Range 后缀形式非 RFC；删除在途任务竞态；在途 retry→409/416/401 无专项测试锁定。
-- frontend: ElMessageBox.confirm 取消 unhandled rejection；详情页瞬时错误永久停轮询；route.params.id 非响应式；onFileChange(any)。
-- 杂项: README 硬编码 jar 版本号；pom initializr 空占位节点。
+**方式 A（本机装有 opencode + superpowers 技能包，推荐）**：把本文档 §6 的"续作提示词"整段发给新会话。SDD 技能脚本位于
+`~/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/scripts/`，
+用 `task-brief <计划文件> N` 生成任务简报、`review-package <计划文件> BASE HEAD` 生成审查包、`sdd-workspace <计划文件>` 定位工作区。
+
+**方式 B（无 superpowers 脚本）**：按计划文档逐任务手工执行，保持同等纪律：
+- 提取任务全文：`awk '/^### Task 9:/,/^### Task 10:/' docs/superpowers/plans/2026-10-21-wave-miner-plan2-m3m4m5.md > /tmp/task-9-brief.md`（编号替换）
+- 每任务 TDD：先跑测试看 FAIL → 实现 → 全量 `./mvnw -q test` → `git add <改动> && git commit -m "<计划里指定的 commit message>"`
+- 每任务完成后生成审查包（手工等价）：
+  `BASE=$(git rev-parse HEAD~1); git log --oneline $BASE..HEAD > /tmp/review.diff && git diff --stat $BASE..HEAD >> /tmp/review.diff && git diff -U10 $BASE..HEAD >> /tmp/review.diff`
+  再让另一个无上下文的会话/代理对照计划任务原文审查该 diff（spec 合规 + 质量，两裁定都给出）。
+- 各任务 commit message 计划里已写死，照抄。
+
+**执行顺序必须 T9→T10→T11→T12→T13**（T11 依赖 T9 的 SSE；T13 验收依赖全部）。
+
+## 4. 已做 Rulings（复制自执行 ledger，.superpowers/ 不入库故转录于此）
+
+1. 直接在 main 分支执行（不建 worktree）— 项目惯例（计划 1 同样）+ 需求方明确指令；每任务提交弥补粒度。
+2. 计划文档 Ruling 1-14（见计划文档"Rulings"章节），核心：MiniMax 中国站 baseUrl=`https://api.minimax.cn`（修正交接文档的 minimaxi.com）；阿里云轮询用 POST；API key 解析序 设置表→env→无；speaker 归一化 Integer；engine_raw 前端 URL 按 `/` 分段编码避免 Tomcat 拒 %2F；SSE 终态服务端 complete；WireMock 3.13.1。
+3. （T4）brief 测试断言 speaker isNull() 与 Interfaces"省略该键"矛盾 — 以契约为准，断言改 `has("speaker").isFalse()`。
+4. （T5）parseSilenceEnd 取首个空白前 token、detectSilencesCommand 阈值 trimNum — brief 测试为权威，按测试修正实现。
+5. （T6）重试测试用 WireMock scenario 桩替代双普通桩 — WireMock 3.x last-stub-wins 使 brief 版本测不到重试；引擎代码零改动。
+6. （T7）TranscribeStage 5 参构造（计划 Interfaces 块中的 ArtifactStore 参数是计划勘误，已按勘误执行）；registry.get 在 resolveInput 之前（brief 自身测试要求）。
+7. （T8）full-flow 测试用 `hermeticPolicy(wire)` 把 upload_host 改写为 WireMock 本地 — brief 原文指向真实 OSS 主机会造成测试外呼。
+
+## 5. 真机验收（T13）所需
+
+- **真实 API key**：MiniMax 中国站（platform.minimax.cn 申请，baseUrl api.minimax.cn）与 阿里云百炼（DASHSCOPE_API_KEY）。两种注入方式：设置页填入（存 SQLite）或环境变量 `WAVEMINER_MINIMAX_API_KEY` / `WAVEMINER_ALIYUN_API_KEY`（兼容 `DASHSCOPE_API_KEY`）。
+- 本机已装 ffmpeg 9.0.2 / yt-dlp（brew）；Windows/Linux 注意事项见 README 与计划 1 文档。
+- 验收清单见计划 Task 13（11 项：设置脱敏、engines 列表、短音频转写、中英混合+说话人分离、直链 mp4 全流程、阿里云双引擎、>500s 切分、未配 key 报错、SSE 实时、令牌+`?token=`、错误 key 的 engine_raw 存档）。
+- 验收中若发现缺陷：按 TDD 小步修复各自提交（`fix: ...`）。
+
+## 6. 遗留 Minor（不阻塞，T13 或后续顺手清）
+
+- T1: SettingApiTest @TempDir 共库跨用例（现用键不相交，加用例需注意）；PUT 坏 JSON → 500 而非 400（HttpMessageNotReadableException 未映射）。
+- T2: EngineRegistry.get 对 null id() 会 NPE；EngineController 引擎列表构造期冻结。
+- T3: SchemaMigrator 无专属单测；engineId/language 归一化在 create()/validate() 重复；语言匹配大小写敏感。
+- T4: SegmentMerger 不接受 null 输入（内部调用方）。
+- T5: cutPoints maxSec<=0 死循环（实际值 500/43200 安全）；detectSilences 无取消路径。
+- T6: speakerOf 超长数字串 NFE（被 parseVerboseJson catch 包住）；errorMessage 对 null body 渲染 "null"。
+- T7: transcribeInChunks 的 `catch(RuntimeException){throw e;}` 为空操作（注释意图）。
+- T8: EngineHttpClient 重试耗尽异常缺 engine_raw 存档提示且仅 500 字符摘要；downloadResult 空 URL 无存档提示；上传/提交失败缺阶段上下文前缀。
+- 计划 1 时代的遗留清单（见旧 HANDOFF git 历史或计划 1 文档）仍然有效，未处理。
+
+## 7. 实战注意事项（本会话踩过的坑，新会话直接避让）
+
+1. Spring Boot 4 测试注解换了包：`org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`（不是 boot.test.autoconfigure.web.servlet）。
+2. JSON 是 Jackson 3：`tools.jackson.databind.ObjectMapper/JsonNode/node.ObjectNode`；writeValueAsString/readTree 不抛受检异常。
+3. WireMock 3.x 同优先级 last-stub-wins：同一 URL 要先后返回不同响应必须用 scenario（`Scenario.STARTED` 起始态）；重试类测试用 scenario 才真实覆盖。
+4. WireMock 桩的 URL 必须全部指向 `wire.baseUrl()`（brief 里真实 OSS host 的桩要改写，勿外呼）。
+5. surefire 计数以 Maven 汇总行为准；报告里手写数字曾误计（114 vs 实际）。
+6. Spring `ObjectProvider.orderedStream()` 每次调用返回新流；mock 时用 `thenAnswer(inv -> Stream.of(...))` 而非 `thenReturn(stream)`（后者二次消费抛异常）。
+7. javac 对 `rs -> out.put(...)` 这类既可 value 又可 void 的 lambda 在 ResultSetExtractor/RowCallbackHandler 间有二义性——写成块体。
+8. 旧开发库升级靠 `SchemaMigrator`（PRAGMA 检查 + ALTER），已实测兼容。
+9. Mockito 桩 FfmpegService 的 extractAudio 用 3 参版本（2 参是 default 方法，mock 不转发）。
+10. 冒烟实测旧库：`./mvnw spring-boot:run -Dspring-boot.run.arguments=--app.data-dir=../data`（brief 里 `./mvnw spring-boot:run &` 默认会建 backend/data 新库）。
+
+## 8. 续作提示词（复制给新会话）
+
+```
+继续 wave-miner 项目（计划 2 后半段）。先读以下文档建立完整上下文：
+1. docs/superpowers/HANDOFF-PLAN2.md（中断交接：T1-T8 已完成，T9-T13 待做，含 Rulings/遗留/实战注意）
+2. docs/superpowers/plans/2026-10-21-wave-miner-plan2-m3m4m5.md（计划 2 全文，Task 9-13 的步骤与代码就在其中）
+
+任务：从 Task 9 开始按 superpowers:subagent-driven-development 逐任务执行到 Task 13（每任务 TDD + 独立审查 + 提交，commit message 用计划里写死的）。遵守 HANDOFF §0 约定与 §7 实战注意事项。T13 真机验收需要真实 MiniMax/阿里云 API key（注入方式见 HANDOFF §5），验收后更新 HANDOFF 为完成态。
+```
