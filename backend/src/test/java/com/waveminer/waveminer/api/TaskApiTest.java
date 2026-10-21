@@ -161,6 +161,14 @@ class TaskApiTest {
     }
 
     @Test
+    void unknownApiPathReturns404() throws Exception {
+        mvc.perform(get("/api/nonexistent"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("接口不存在"));
+    }
+
+    @Test
     void artifactDownloadSupportsRange() throws Exception {
         Mockito.doAnswer(inv -> {
             Path dir = inv.getArgument(1);

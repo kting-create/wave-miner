@@ -13,6 +13,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -27,6 +28,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<Map<String, String>> notFound(NoSuchElementException e) {
         return error(HttpStatus.NOT_FOUND, "NOT_FOUND", e.getMessage());
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Map<String, String>> noRoute(NoResourceFoundException e) {
+        return error(HttpStatus.NOT_FOUND, "NOT_FOUND", "接口不存在");
     }
 
     @ExceptionHandler(ArtifactNotFoundException.class)
