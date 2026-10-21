@@ -21,6 +21,9 @@ export interface TaskView {
   sourceRef: string | null
   status: TaskStatus
   errorMessage: string | null
+  engineId: string | null
+  language: string | null
+  diarize: boolean
   createdAt: string | null
   startedAt: string | null
   finishedAt: string | null
@@ -39,4 +42,34 @@ export interface ToolHealth {
   name: string
   ok: boolean
   version: string
+}
+
+export interface EngineInfo {
+  id: string
+  displayName: string
+  maxDurationSec: number
+  maxSizeBytes: number
+  supportsDiarization: boolean
+  languages: string[]
+  configured: boolean
+}
+
+export interface TranscriptSegment {
+  startMs: number
+  endMs: number
+  text: string
+  speaker?: number | null
+}
+
+export interface Transcript {
+  segments: TranscriptSegment[]
+  engine: string
+  language: string
+  durationMs: number
+}
+
+export interface SettingView {
+  key: string
+  value: string
+  configured: boolean
 }

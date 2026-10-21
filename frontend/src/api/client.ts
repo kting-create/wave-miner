@@ -1,4 +1,4 @@
-import type { TaskPage, TaskView, ToolHealth } from './types'
+import type { EngineInfo, SettingView, TaskPage, TaskView, ToolHealth } from './types'
 
 const TOKEN_KEY = 'wave-miner-token'
 
@@ -56,5 +56,22 @@ export const api = {
   artifactUrl(taskId: string, name: string): string {
     const t = getToken()
     return `/api/tasks/${taskId}/artifacts/${encodeURIComponent(name)}${t ? `?token=${encodeURIComponent(t)}` : ''}`
+  },
+  getEngines(): Promise<EngineInfo[]> {
+    return fetch('/api/engines', { headers: headers() }).then((r) => parse<EngineInfo[]>(r))
+  },
+  getSettings(): Promise<SettingView[]> {
+    return fetch('/api/settings', { headers: headers() }).then((r) => parse<SettingView[]>(r))
+  },
+  putSetting(key: string, value: string): Promise<SettingView> {
+    return fetch('/api/settings', {
+      method: 'PUT',
+      headers: { ...headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    }).then((r) => parse<SettingView>(r))
+  },
+  sseUrl(taskId: string): string {
+    const t = getToken()
+    return `/api/tasks/${taskId}/events${t ? `?token=${encodeURIComponent(t)}` : ''}`
   },
 }
