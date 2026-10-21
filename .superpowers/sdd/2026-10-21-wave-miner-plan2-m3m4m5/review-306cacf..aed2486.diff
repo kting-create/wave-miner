@@ -1,0 +1,623 @@
+# Review package: 306cacf6c4e2b679393d704379e9b78b776cf2e8..aed2486
+
+## Commits
+aed2486 feat: 任务引擎/语言/说话人分离字段与创建校验
+
+## Files changed
+ .../waveminer/waveminer/api/TaskController.java    |  8 +++--
+ .../com/waveminer/waveminer/api/TaskViews.java     |  1 +
+ .../waveminer/pipeline/PipelineService.java        | 26 +++++++++++++--
+ .../waveminer/pipeline/SchemaMigrator.java         | 33 +++++++++++++++++++
+ .../com/waveminer/waveminer/pipeline/Task.java     |  9 +++++
+ .../waveminer/waveminer/pipeline/TaskContext.java  | 17 ++++++++++
+ .../waveminer/pipeline/TaskRepository.java         |  8 +++--
+ .../waveminer/waveminer/pipeline/TaskRunner.java   |  5 ++-
+ .../waveminer/pipeline/PipelineServiceTest.java    | 38 +++++++++++++++++++---
+ .../waveminer/pipeline/TaskRepositoryTest.java     | 15 +++++++++
+ .../waveminer/pipeline/TaskRunnerTest.java         |  2 +-
+ 11 files changed, 149 insertions(+), 13 deletions(-)
+
+## Diff
+diff --git a/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java b/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java
+index 881c278..bcf14f2 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java
++++ b/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java
+@@ -79,25 +79,28 @@ public class TaskController {
+         this.repo = repo;
+         this.artifacts = artifacts;
+         this.runner = runner;
+     }
+ 
+     @PostMapping
+     public TaskViews.TaskView create(
+             @RequestParam(required = false) String url,
+             @RequestParam(required = false) MultipartFile file,
+             @RequestParam String stages,
+-            @RequestParam(required = false) String language) {
++            @RequestParam(required = false) String language,
++            @RequestParam(required = false) String engineId,
++            @RequestParam(defaultValue = "false") String diarize) {
+         List<StageType> stageList = Arrays.stream(stages.split(","))
+                 .map(String::trim).filter(s -> !s.isEmpty())
+                 .map(TaskController::parseStage).toList();
+-        Task t = pipeline.create(new PipelineService.CreateTaskCommand(url, file, stageList, language));
++        Task t = pipeline.create(new PipelineService.CreateTaskCommand(
++                url, file, stageList, language, engineId, Boolean.parseBoolean(diarize)));
+         return toView(t);
+     }
+ 
+     @GetMapping
+     public TaskViews.TaskPage list(@RequestParam(required = false) String status,
+                                    @RequestParam(defaultValue = "0") int page,
+                                    @RequestParam(defaultValue = "20") int size) {
+         int p = Math.max(0, page);
+         int s = Math.min(100, Math.max(1, size));
+         List<TaskViews.TaskView> items = repo.list(status, p, s).stream().map(this::toView).toList();
+@@ -281,20 +284,21 @@ public class TaskController {
+ 
+     private TaskViews.TaskView toView(Task t) {
+         List<TaskViews.StageView> stages = repo.stagesOf(t.getId()).stream()
+                 .map(s -> new TaskViews.StageView(s.getStageType(), s.getStatus(), s.getDetail(), s.getArtifactPath()))
+                 .toList();
+         List<TaskViews.ArtifactView> arts = artifacts.listArtifacts(t.getId()).stream()
+                 .map(a -> new TaskViews.ArtifactView(a.name(), a.sizeBytes()))
+                 .toList();
+         return new TaskViews.TaskView(t.getId(), t.getTitle(), t.getSourceType().name(), t.getSourceRef(),
+                 t.getStatus().name(), t.getErrorMessage(),
++                t.getEngineId(), t.getLanguage(), t.isDiarize(),
+                 iso(t.getCreatedAt()), iso(t.getStartedAt()), iso(t.getFinishedAt()), stages, arts);
+     }
+ 
+     private static String iso(Instant i) { return i == null ? null : i.toString(); }
+ 
+     private static void deleteDirectoryRecursively(Path dir) throws IOException {
+         if (!Files.exists(dir)) return;
+         try (var walk = Files.walk(dir)) {
+             walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                 try {
+diff --git a/backend/src/main/java/com/waveminer/waveminer/api/TaskViews.java b/backend/src/main/java/com/waveminer/waveminer/api/TaskViews.java
+index c23fa5e..da2ad0c 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/api/TaskViews.java
++++ b/backend/src/main/java/com/waveminer/waveminer/api/TaskViews.java
+@@ -5,17 +5,18 @@ import com.waveminer.waveminer.pipeline.StageType;
+ import java.util.List;
+ 
+ public final class TaskViews {
+ 
+     public record StageView(StageType type, StageStatus status, String detail, String artifactName) {}
+ 
+     public record ArtifactView(String name, long sizeBytes) {}
+ 
+     public record TaskView(String id, String title, String sourceType, String sourceRef,
+                            String status, String errorMessage,
++                           String engineId, String language, boolean diarize,
+                            String createdAt, String startedAt, String finishedAt,
+                            List<StageView> stages, List<ArtifactView> artifacts) {}
+ 
+     public record TaskPage(List<TaskView> items, long total, int page, int size) {}
+ 
+     private TaskViews() {}
+ }
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/PipelineService.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/PipelineService.java
+index fc446fd..94b07c7 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/pipeline/PipelineService.java
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/PipelineService.java
+@@ -1,13 +1,16 @@
+ package com.waveminer.waveminer.pipeline;
+ 
+ import com.waveminer.waveminer.config.AppProperties;
++import com.waveminer.waveminer.engine.EngineException;
++import com.waveminer.waveminer.engine.EngineRegistry;
++import com.waveminer.waveminer.engine.TranscriptionEngine;
+ import com.waveminer.waveminer.media.MediaTypes;
+ import com.waveminer.waveminer.store.ArtifactStore;
+ import java.io.File;
+ import java.io.IOException;
+ import java.io.UncheckedIOException;
+ import java.net.URI;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.StandardCopyOption;
+ import java.time.Instant;
+@@ -16,37 +19,40 @@ import java.util.List;
+ import java.util.Objects;
+ import java.util.Set;
+ import java.util.UUID;
+ import java.util.function.LongPredicate;
+ import org.springframework.stereotype.Service;
+ import org.springframework.web.multipart.MultipartFile;
+ 
+ @Service
+ public class PipelineService {
+ 
+-    public record CreateTaskCommand(String url, MultipartFile file, List<StageType> stages, String language) {}
++    public record CreateTaskCommand(String url, MultipartFile file, List<StageType> stages,
++                                    String language, String engineId, boolean diarize) {}
+ 
+     public interface Runner {
+         void submit(Task task);
+     }
+ 
+     private final TaskRepository repo;
+     private final ArtifactStore artifacts;
++    private final EngineRegistry registry;
+     private final AppProperties props;
+     private final Runner runner;
+ 
+     LongPredicate diskSpaceCheck;
+ 
+-    public PipelineService(TaskRepository repo, ArtifactStore artifacts,
++    public PipelineService(TaskRepository repo, ArtifactStore artifacts, EngineRegistry registry,
+                            AppProperties props, Runner runner) {
+         this.repo = repo;
+         this.artifacts = artifacts;
++        this.registry = registry;
+         this.props = props;
+         this.runner = Objects.requireNonNull(runner, "TaskRunner 未注入");
+         this.diskSpaceCheck = required -> {
+             File dir = new File(props.getDataDir()).getAbsoluteFile();
+             while (!dir.exists() && dir.getParentFile() != null) {
+                 dir = dir.getParentFile();
+             }
+             return dir.getUsableSpace() > required;
+         };
+     }
+@@ -60,20 +66,23 @@ public class PipelineService {
+         boolean isUrl = cmd.url() != null && !cmd.url().isBlank();
+ 
+         Task t = new Task();
+         t.setId(UUID.randomUUID().toString());
+         t.setSourceType(isUrl ? SourceType.URL : SourceType.UPLOAD);
+         t.setSourceRef(isUrl ? cmd.url().trim() : cmd.file().getOriginalFilename());
+         t.setTitle(isUrl ? titleFromUrl(cmd.url()) : cmd.file().getOriginalFilename());
+         t.setStages(List.copyOf(new LinkedHashSet<>(cmd.stages())));
+         t.setStatus(TaskStatus.PENDING);
+         t.setCreatedAt(Instant.now());
++        t.setEngineId(cmd.engineId() == null || cmd.engineId().isBlank() ? "minimax" : cmd.engineId().trim());
++        t.setLanguage(cmd.language() == null || cmd.language().isBlank() ? "auto" : cmd.language().trim());
++        t.setDiarize(cmd.diarize());
+ 
+         if (!isUrl) {
+             if (!diskSpaceCheck.test(cmd.file().getSize() * 3 / 2)) {
+                 throw new IllegalArgumentException("磁盘剩余空间不足，无法保存上传文件");
+             }
+             saveUpload(t.getId(), cmd.file());
+         }
+ 
+         repo.insert(t);
+         repo.insertStages(t.getId(), t.getStages());
+@@ -120,20 +129,33 @@ public class PipelineService {
+             }
+             String filename = cmd.file().getOriginalFilename();
+             String ext = MediaTypes.extension(filename);
+             if (!MediaTypes.ALL_EXTENSIONS.contains(ext)) {
+                 throw new IllegalArgumentException("不支持的文件类型：" + (ext.isBlank() ? "（无扩展名）" : ext));
+             }
+             if (stages.contains(StageType.AUDIO_EXTRACT) && !MediaTypes.isVideo(filename)) {
+                 throw new IllegalArgumentException("提取音频需要视频文件（当前为 ." + ext + "）");
+             }
+         }
++        if (stages.contains(StageType.TRANSCRIBE)) {
++            String engineId = cmd.engineId() == null || cmd.engineId().isBlank() ? "minimax" : cmd.engineId().trim();
++            TranscriptionEngine engine;
++            try {
++                engine = registry.get(engineId);
++            } catch (EngineException e) {
++                throw new IllegalArgumentException("未知转写引擎: " + engineId);
++            }
++            String lang = cmd.language() == null || cmd.language().isBlank() ? "auto" : cmd.language().trim();
++            if (!"auto".equals(lang) && !engine.info().languages().contains(lang)) {
++                throw new IllegalArgumentException("该引擎不支持的语言: " + lang);
++            }
++        }
+     }
+ 
+     private void saveUpload(String taskId, MultipartFile file) {
+         Path dir = artifacts.taskDir(taskId);
+         String ext = MediaTypes.extension(file.getOriginalFilename());
+         Path dest = dir.resolve("source." + ext);
+         try (var in = file.getInputStream()) {
+             Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
+         } catch (IOException e) {
+             throw new UncheckedIOException("保存上传文件失败", e);
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/SchemaMigrator.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/SchemaMigrator.java
+new file mode 100644
+index 0000000..cb56988
+--- /dev/null
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/SchemaMigrator.java
+@@ -0,0 +1,33 @@
++package com.waveminer.waveminer.pipeline;
++
++import java.util.List;
++import org.springframework.boot.ApplicationArguments;
++import org.springframework.boot.ApplicationRunner;
++import org.springframework.core.annotation.Order;
++import org.springframework.jdbc.core.JdbcTemplate;
++import org.springframework.stereotype.Component;
++
++/** SQLite 旧库列扩展：CREATE TABLE IF NOT EXISTS 不会补列，这里按需 ALTER。 */
++@Component
++@Order(1)
++public class SchemaMigrator implements ApplicationRunner {
++
++    private final JdbcTemplate jdbc;
++
++    public SchemaMigrator(JdbcTemplate jdbc) { this.jdbc = jdbc; }
++
++    @Override
++    public void run(ApplicationArguments args) {
++        List<String> columns = jdbc.query("PRAGMA table_info(task)", (rs, i) -> rs.getString("name"));
++        if (columns.isEmpty()) return;
++        addColumn(columns, "engine_id", "TEXT");
++        addColumn(columns, "language", "TEXT");
++        addColumn(columns, "diarize", "INTEGER");
++    }
++
++    private void addColumn(List<String> columns, String name, String type) {
++        if (!columns.contains(name)) {
++            jdbc.execute("ALTER TABLE task ADD COLUMN " + name + " " + type);
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/Task.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/Task.java
+index fcea72a..8ebb8aa 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/pipeline/Task.java
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/Task.java
+@@ -7,20 +7,23 @@ public class Task {
+     private String id;
+     private SourceType sourceType;
+     private String sourceRef;
+     private String title;
+     private List<StageType> stages;
+     private TaskStatus status;
+     private String errorMessage;
+     private Instant createdAt;
+     private Instant startedAt;
+     private Instant finishedAt;
++    private String engineId;
++    private String language;
++    private boolean diarize;
+ 
+     public String getId() { return id; }
+     public void setId(String id) { this.id = id; }
+     public SourceType getSourceType() { return sourceType; }
+     public void setSourceType(SourceType sourceType) { this.sourceType = sourceType; }
+     public String getSourceRef() { return sourceRef; }
+     public void setSourceRef(String sourceRef) { this.sourceRef = sourceRef; }
+     public String getTitle() { return title; }
+     public void setTitle(String title) { this.title = title; }
+     public List<StageType> getStages() { return stages; }
+@@ -28,11 +31,17 @@ public class Task {
+     public TaskStatus getStatus() { return status; }
+     public void setStatus(TaskStatus status) { this.status = status; }
+     public String getErrorMessage() { return errorMessage; }
+     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+     public Instant getCreatedAt() { return createdAt; }
+     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+     public Instant getStartedAt() { return startedAt; }
+     public void setStartedAt(Instant startedAt) { this.startedAt = startedAt; }
+     public Instant getFinishedAt() { return finishedAt; }
+     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
++    public String getEngineId() { return engineId; }
++    public void setEngineId(String v) { this.engineId = v; }
++    public String getLanguage() { return language; }
++    public void setLanguage(String v) { this.language = v; }
++    public boolean isDiarize() { return diarize; }
++    public void setDiarize(boolean v) { this.diarize = v; }
+ }
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskContext.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskContext.java
+index 995e3e7..4ac0f71 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskContext.java
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskContext.java
+@@ -6,39 +6,56 @@ import java.util.EnumMap;
+ import java.util.Map;
+ import java.util.Optional;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ 
+ public final class TaskContext {
+     private final String taskId;
+     private final Path dir;
+     private final String sourceUrl;
+     private final Path uploadedFile;
+     private final AtomicBoolean cancel;
++    private final String engineId;
++    private final String language;
++    private final boolean diarize;
+     private final Map<StageType, String> artifacts = new EnumMap<>(StageType.class);
+ 
+     public TaskContext(String taskId, Path dir, String sourceUrl, Path uploadedFile, AtomicBoolean cancel) {
++        this(taskId, dir, sourceUrl, uploadedFile, cancel, null, "auto", false);
++    }
++
++    public TaskContext(String taskId, Path dir, String sourceUrl, Path uploadedFile, AtomicBoolean cancel,
++                       String engineId, String language, boolean diarize) {
+         this.taskId = taskId;
+         this.dir = dir;
+         this.sourceUrl = sourceUrl;
+         this.uploadedFile = uploadedFile;
+         this.cancel = cancel;
++        this.engineId = engineId;
++        this.language = language == null || language.isBlank() ? "auto" : language;
++        this.diarize = diarize;
+     }
+     public String taskId() { return taskId; }
+ 
+     public Path dir() { return dir; }
+ 
+     public String sourceUrl() { return sourceUrl; }
+ 
+     public Optional<Path> uploadedFile() { return Optional.ofNullable(uploadedFile); }
+ 
+     public boolean cancelRequested() { return cancel.get(); }
+ 
++    public String engineId() { return engineId; }
++
++    public String language() { return language; }
++
++    public boolean diarize() { return diarize; }
++
+     public Path artifactOf(StageType type) {
+         String name = artifacts.get(type);
+         return name == null ? null : dir.resolve(name);
+     }
+ 
+     public void putArtifact(StageType type, String fileName) {
+         artifacts.put(type, fileName);
+     }
+ 
+     String artifactNameOf(StageType type) { return artifacts.get(type); }
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRepository.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRepository.java
+index e9a81cc..21bde47 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRepository.java
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRepository.java
+@@ -16,24 +16,25 @@ import org.springframework.transaction.annotation.Transactional;
+ public class TaskRepository {
+ 
+     private static final RowMapper<Task> TASK_MAPPER = TaskRepository::mapTask;
+ 
+     private final JdbcTemplate jdbc;
+ 
+     public TaskRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+ 
+     @Transactional
+     public Task insert(Task t) {
+-        jdbc.update("INSERT INTO task(id,source_type,source_ref,title,stages,status,error_message,created_at,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
++        jdbc.update("INSERT INTO task(id,source_type,source_ref,title,stages,status,error_message,created_at,started_at,finished_at,engine_id,language,diarize) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 t.getId(), t.getSourceType().name(), t.getSourceRef(), t.getTitle(),
+                 joinStages(t.getStages()), t.getStatus().name(), t.getErrorMessage(),
+-                ts(t.getCreatedAt()), ts(t.getStartedAt()), ts(t.getFinishedAt()));
++                ts(t.getCreatedAt()), ts(t.getStartedAt()), ts(t.getFinishedAt()),
++                t.getEngineId(), t.getLanguage(), t.isDiarize() ? 1 : 0);
+         return t;
+     }
+ 
+     @Transactional
+     public void insertStages(String taskId, List<StageType> stages) {
+         for (StageType s : stages) {
+             jdbc.update("INSERT INTO task_stage(task_id,stage_type,status) VALUES(?,?,'PENDING')",
+                     taskId, s.name());
+         }
+     }
+@@ -119,20 +120,23 @@ public class TaskRepository {
+         t.setTitle(rs.getString("title"));
+         t.setStages(Arrays.stream(rs.getString("stages").split(","))
+                 .filter(s -> !s.isBlank())
+                 .map(StageType::valueOf)
+                 .collect(Collectors.toList()));
+         t.setStatus(TaskStatus.valueOf(rs.getString("status")));
+         t.setErrorMessage(rs.getString("error_message"));
+         t.setCreatedAt(parseTs(rs.getString("created_at")));
+         t.setStartedAt(parseTs(rs.getString("started_at")));
+         t.setFinishedAt(parseTs(rs.getString("finished_at")));
++        t.setEngineId(rs.getString("engine_id"));
++        t.setLanguage(rs.getString("language"));
++        t.setDiarize(rs.getInt("diarize") != 0);
+         return t;
+     }
+ 
+     private static TaskStage mapStage(ResultSet rs, int i) throws SQLException {
+         TaskStage s = new TaskStage();
+         s.setTaskId(rs.getString("task_id"));
+         s.setStageType(StageType.valueOf(rs.getString("stage_type")));
+         s.setStatus(StageStatus.valueOf(rs.getString("status")));
+         s.setDetail(rs.getString("detail"));
+         s.setArtifactPath(rs.getString("artifact_path"));
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java
+index 7896b01..166c3e6 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java
+@@ -103,21 +103,24 @@ public class TaskRunner implements PipelineService.Runner {
+ 
+         repo.updateTaskStatus(taskId, TaskStatus.RUNNING, null);
+         repo.updateStartedAt(taskId, Instant.now());
+ 
+         TaskContext ctx = new TaskContext(
+                 taskId,
+                 store.taskDir(taskId),
+                 task.getSourceType() == SourceType.URL ? task.getSourceRef() : null,
+                 task.getSourceType() == SourceType.UPLOAD
+                         ? TaskContext.findUploadedFile(store.taskDir(taskId)) : null,
+-                cancel);
++                cancel,
++                task.getEngineId(),
++                task.getLanguage(),
++                task.isDiarize());
+ 
+         Map<StageType, TaskStage> stored = repo.stagesOf(taskId).stream()
+                 .collect(Collectors.toMap(TaskStage::getStageType, Function.identity()));
+ 
+         for (StageType type : task.getStages()) {
+             if (cancel.get()) {
+                 markRemainingSkipped(task, type);
+                 repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
+                 repo.updateFinishedAt(taskId, Instant.now());
+                 return;
+diff --git a/backend/src/test/java/com/waveminer/waveminer/pipeline/PipelineServiceTest.java b/backend/src/test/java/com/waveminer/waveminer/pipeline/PipelineServiceTest.java
+index 9f30981..0f882e6 100644
+--- a/backend/src/test/java/com/waveminer/waveminer/pipeline/PipelineServiceTest.java
++++ b/backend/src/test/java/com/waveminer/waveminer/pipeline/PipelineServiceTest.java
+@@ -1,20 +1,21 @@
+ package com.waveminer.waveminer.pipeline;
+ 
+ import com.waveminer.waveminer.pipeline.PipelineService.CreateTaskCommand;
+ import com.waveminer.waveminer.store.ArtifactStore;
+ import java.nio.file.Path;
+ import java.util.ArrayList;
+ import java.util.List;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
++import org.mockito.Mockito;
+ import org.springframework.jdbc.core.JdbcTemplate;
+ import org.springframework.jdbc.datasource.DriverManagerDataSource;
+ import org.springframework.mock.web.MockMultipartFile;
+ 
+ import static org.assertj.core.api.Assertions.assertThat;
+ import static org.assertj.core.api.Assertions.assertThatThrownBy;
+ 
+ class PipelineServiceTest {
+ 
+     @TempDir
+@@ -30,33 +31,42 @@ class PipelineServiceTest {
+ 
+     @BeforeEach
+     void setUp() {
+         var props = new com.waveminer.waveminer.config.AppProperties();
+         props.setDataDir(tmp.resolve("data").toString());
+         runner = new StubRunner();
+         // 注意：不能用 jdbc:sqlite::memory:——DriverManagerDataSource 每次新建连接，
+         // 内存库互不可见；用临时文件库保证跨连接可见
+         var ds = new DriverManagerDataSource("jdbc:sqlite:" + tmp.resolve("pipeline-test.db"));
+         var jdbc = new JdbcTemplate(ds);
+-        jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)");
++        jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, engine_id TEXT, language TEXT, diarize INTEGER)");
+         jdbc.execute("CREATE TABLE IF NOT EXISTS task_stage (task_id TEXT NOT NULL, stage_type TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, artifact_path TEXT, PRIMARY KEY (task_id, stage_type))");
+-        service = new PipelineService(new TaskRepository(jdbc), new ArtifactStore(props), props, runner);
++        com.waveminer.waveminer.engine.TranscriptionEngine fake = Mockito.mock(com.waveminer.waveminer.engine.TranscriptionEngine.class);
++        Mockito.when(fake.id()).thenReturn("fake-engine");
++        Mockito.when(fake.info()).thenReturn(new com.waveminer.waveminer.engine.EngineInfo(
++                "fake-engine", "假引擎", 500, 1024, true, List.of("zh")));
++        @SuppressWarnings("unchecked")
++        org.springframework.beans.factory.ObjectProvider<com.waveminer.waveminer.engine.TranscriptionEngine> provider =
++                Mockito.mock(org.springframework.beans.factory.ObjectProvider.class);
++        Mockito.when(provider.orderedStream()).thenReturn(java.util.stream.Stream.of(fake));
++        service = new PipelineService(new TaskRepository(jdbc), new ArtifactStore(props),
++                new com.waveminer.waveminer.engine.EngineRegistry(provider), props, runner);
+     }
+ 
+     private CreateTaskCommand url(String url, List<StageType> stages) {
+-        return new CreateTaskCommand(url, null, stages, null);
++        return new CreateTaskCommand(url, null, stages, null, null, false);
+     }
+ 
+     private CreateTaskCommand upload(String filename, List<StageType> stages) {
+         return new CreateTaskCommand(null,
+                 new MockMultipartFile("file", filename, "application/octet-stream", new byte[]{1, 2, 3}),
+-                stages, null);
++                stages, null, null, false);
+     }
+ 
+     @Test
+     void urlWithDownloadCreatesTaskAndSubmits() {
+         Task t = service.create(url("https://example.com/video/BV1x", List.of(StageType.DOWNLOAD, StageType.AUDIO_EXTRACT)));
+         assertThat(t.getId()).isNotBlank();
+         assertThat(t.getSourceType()).isEqualTo(SourceType.URL);
+         assertThat(t.getStatus()).isEqualTo(TaskStatus.PENDING);
+         assertThat(runner.submitted).hasSize(1);
+     }
+@@ -116,14 +126,32 @@ class PipelineServiceTest {
+         assertThatThrownBy(() -> service.create(url("ftp://e.com/a", List.of(StageType.DOWNLOAD))))
+                 .isInstanceOf(IllegalArgumentException.class)
+                 .hasMessageContaining("http");
+     }
+ 
+     @Test
+     void urlAndFileTogetherRejected() {
+         assertThatThrownBy(() -> service.create(new CreateTaskCommand(
+                 "https://e.com/a",
+                 new MockMultipartFile("file", "a.mp4", "video/mp4", new byte[]{1}),
+-                List.of(StageType.DOWNLOAD), null)))
++                List.of(StageType.DOWNLOAD), null, null, false)))
+                 .isInstanceOf(IllegalArgumentException.class);
+     }
++
++    @Test
++    void unknownEngineRejected() {
++        assertThatThrownBy(() -> service.create(new CreateTaskCommand(
++                "https://e.com/a.mp4", null,
++                List.of(StageType.DOWNLOAD, StageType.TRANSCRIBE), null, "no-such", false)))
++                .isInstanceOf(IllegalArgumentException.class)
++                .hasMessageContaining("未知转写引擎");
++    }
++
++    @Test
++    void unsupportedLanguageRejected() {
++        assertThatThrownBy(() -> service.create(new CreateTaskCommand(
++                "https://e.com/a.mp4", null,
++                List.of(StageType.DOWNLOAD, StageType.TRANSCRIBE), "xx", "fake-engine", false)))
++                .isInstanceOf(IllegalArgumentException.class)
++                .hasMessageContaining("不支持的语言");
++    }
+ }
+diff --git a/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRepositoryTest.java b/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRepositoryTest.java
+index c4f22a9..b21af90 100644
+--- a/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRepositoryTest.java
++++ b/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRepositoryTest.java
+@@ -116,15 +116,30 @@ class TaskRepositoryTest {
+         repo.updateStage("t5", StageType.DOWNLOAD, StageStatus.RUNNING, null, null);
+ 
+         repo.markStaleRunningAsFailed("应用重启导致中断，可重试");
+ 
+         Task t = repo.find("t5").orElseThrow();
+         assertThat(t.getStatus()).isEqualTo(TaskStatus.FAILED);
+         assertThat(t.getErrorMessage()).contains("应用重启");
+         assertThat(repo.stagesOf("t5").get(0).getStatus()).isEqualTo(StageStatus.FAILED);
+     }
+ 
++    @Test
++    void engineFieldsRoundTrip() {
++        Task t = newTask("t6e");
++        t.setEngineId("minimax");
++        t.setLanguage("zh");
++        t.setDiarize(true);
++        repo.insert(t);
++        repo.insertStages("t6e", t.getStages());
++
++        Task found = repo.find("t6e").orElseThrow();
++        assertThat(found.getEngineId()).isEqualTo("minimax");
++        assertThat(found.getLanguage()).isEqualTo("zh");
++        assertThat(found.isDiarize()).isTrue();
++    }
++
+     @Test
+     void findMissing() {
+         assertThat(repo.find("nope")).isEmpty();
+     }
+ }
+diff --git a/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java b/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java
+index ccc2589..7f6cc4f 100644
+--- a/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java
++++ b/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java
+@@ -31,21 +31,21 @@ class TaskRunnerTest {
+     private final CountDownLatch downloadEntered = new CountDownLatch(1);
+     private volatile CountDownLatch downloadBlocker;
+     private final AtomicInteger downloadInvocations = new AtomicInteger();
+     private final AtomicInteger extractInvocations = new AtomicInteger();
+     private volatile boolean extractSawDownloadArtifact;
+     private volatile boolean downloadWaitsForCancel;
+ 
+     @BeforeEach
+     void setUp() {
+         var jdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:sqlite:" + tmp.resolve("runner-test.db")));
+-        jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)");
++        jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, engine_id TEXT, language TEXT, diarize INTEGER)");
+         jdbc.execute("CREATE TABLE IF NOT EXISTS task_stage (task_id TEXT NOT NULL, stage_type TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, artifact_path TEXT, PRIMARY KEY (task_id, stage_type))");
+         repo = new TaskRepository(jdbc);
+         var props = new com.waveminer.waveminer.config.AppProperties();
+         props.setDataDir(tmp.toString());
+         var store = new ArtifactStore(props);
+         failures.clear();
+ 
+         StageHandler download = new StageHandler() {
+             @Override public StageType type() { return StageType.DOWNLOAD; }
+             @Override public void run(TaskContext ctx) {

@@ -1,0 +1,399 @@
+# Review package: c4846396fb4044f9ebae0055dae86aae7f82d2b8..b53db0e
+
+## Commits
+b53db0e feat: 静音检测与超长音频切分器
+
+## Files changed
+ .../waveminer/waveminer/config/AppProperties.java  | 35 +++++++++++
+ .../waveminer/waveminer/media/AudioSegmenter.java  | 67 ++++++++++++++++++++++
+ .../waveminer/waveminer/media/FfmpegService.java   | 63 ++++++++++++++++++++
+ backend/src/main/resources/application.yml         | 12 ++++
+ .../waveminer/media/AudioSegmenterTest.java        | 59 +++++++++++++++++++
+ .../waveminer/media/FfmpegServiceTest.java         | 23 ++++++++
+ 6 files changed, 259 insertions(+)
+
+## Diff
+diff --git a/backend/src/main/java/com/waveminer/waveminer/config/AppProperties.java b/backend/src/main/java/com/waveminer/waveminer/config/AppProperties.java
+index ca1b2d5..ebfc960 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/config/AppProperties.java
++++ b/backend/src/main/java/com/waveminer/waveminer/config/AppProperties.java
+@@ -5,28 +5,63 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
+ 
+ @ConfigurationProperties(prefix = "app")
+ public class AppProperties {
+     private String dataDir = "./data";
+     private int maxConcurrentTasks = 2;
+     private String ffmpegPath = "ffmpeg";
+     private String ffprobePath = "ffprobe";
+     private String ytDlpPath = "yt-dlp";
+     private long processTimeoutSeconds = 1800;
+     private String accessToken = "";
++    private String minimaxBaseUrl = "https://api.minimax.cn";
++    private String minimaxModel = "asr-1.0";
++    private String aliyunBaseUrl = "https://dashscope.aliyuncs.com/api/v1";
++    private String aliyunModel = "qwen-audio-3.0-asr-flash-filetrans";
++    private long engineHttpTimeoutSeconds = 600;
++    private int engineRetryAttempts = 3;
++    private long transcribePollIntervalSeconds = 5;
++    private long transcribeTimeoutSeconds = 7200;
++    private double silenceThresholdDb = -35.0;
++    private double silenceMinDurationSec = 0.6;
++    private long mergeGapMs = 800;
+ 
+     public Duration processTimeout() { return Duration.ofSeconds(processTimeoutSeconds); }
+ 
++    public Duration engineHttpTimeout() { return Duration.ofSeconds(engineHttpTimeoutSeconds); }
++
+     public String getDataDir() { return dataDir; }
+     public void setDataDir(String dataDir) { this.dataDir = dataDir; }
+     public int getMaxConcurrentTasks() { return maxConcurrentTasks; }
+     public void setMaxConcurrentTasks(int v) { this.maxConcurrentTasks = v; }
+     public String getFfmpegPath() { return ffmpegPath; }
+     public void setFfmpegPath(String v) { this.ffmpegPath = v; }
+     public String getFfprobePath() { return ffprobePath; }
+     public void setFfprobePath(String v) { this.ffprobePath = v; }
+     public String getYtDlpPath() { return ytDlpPath; }
+     public void setYtDlpPath(String v) { this.ytDlpPath = v; }
+     public long getProcessTimeoutSeconds() { return processTimeoutSeconds; }
+     public void setProcessTimeoutSeconds(long v) { this.processTimeoutSeconds = v; }
+     public String getAccessToken() { return accessToken; }
+     public void setAccessToken(String v) { this.accessToken = v; }
++    public String getMinimaxBaseUrl() { return minimaxBaseUrl; }
++    public void setMinimaxBaseUrl(String v) { this.minimaxBaseUrl = v; }
++    public String getMinimaxModel() { return minimaxModel; }
++    public void setMinimaxModel(String v) { this.minimaxModel = v; }
++    public String getAliyunBaseUrl() { return aliyunBaseUrl; }
++    public void setAliyunBaseUrl(String v) { this.aliyunBaseUrl = v; }
++    public String getAliyunModel() { return aliyunModel; }
++    public void setAliyunModel(String v) { this.aliyunModel = v; }
++    public long getEngineHttpTimeoutSeconds() { return engineHttpTimeoutSeconds; }
++    public void setEngineHttpTimeoutSeconds(long v) { this.engineHttpTimeoutSeconds = v; }
++    public int getEngineRetryAttempts() { return engineRetryAttempts; }
++    public void setEngineRetryAttempts(int v) { this.engineRetryAttempts = v; }
++    public long getTranscribePollIntervalSeconds() { return transcribePollIntervalSeconds; }
++    public void setTranscribePollIntervalSeconds(long v) { this.transcribePollIntervalSeconds = v; }
++    public long getTranscribeTimeoutSeconds() { return transcribeTimeoutSeconds; }
++    public void setTranscribeTimeoutSeconds(long v) { this.transcribeTimeoutSeconds = v; }
++    public double getSilenceThresholdDb() { return silenceThresholdDb; }
++    public void setSilenceThresholdDb(double v) { this.silenceThresholdDb = v; }
++    public double getSilenceMinDurationSec() { return silenceMinDurationSec; }
++    public void setSilenceMinDurationSec(double v) { this.silenceMinDurationSec = v; }
++    public long getMergeGapMs() { return mergeGapMs; }
++    public void setMergeGapMs(long v) { this.mergeGapMs = v; }
+ }
+diff --git a/backend/src/main/java/com/waveminer/waveminer/media/AudioSegmenter.java b/backend/src/main/java/com/waveminer/waveminer/media/AudioSegmenter.java
+new file mode 100644
+index 0000000..59690f9
+--- /dev/null
++++ b/backend/src/main/java/com/waveminer/waveminer/media/AudioSegmenter.java
+@@ -0,0 +1,67 @@
++package com.waveminer.waveminer.media;
++
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.function.BooleanSupplier;
++import org.springframework.stereotype.Component;
++
++@Component
++public class AudioSegmenter {
++
++    public record Chunk(double startSec, double endSec, Path file) {}
++
++    private final FfmpegService ffmpeg;
++
++    public AudioSegmenter(FfmpegService ffmpeg) { this.ffmpeg = ffmpeg; }
++
++    public List<Chunk> split(Path input, Path workDir, long maxDurationSec, BooleanSupplier cancelSignal) {
++        double duration = ffmpeg.probeDurationSeconds(input);
++        List<double[]> ranges = cutPoints(duration, ffmpeg.detectSilences(input), maxDurationSec);
++        List<Chunk> chunks = new ArrayList<>();
++        try {
++            int i = 1;
++            for (double[] range : ranges) {
++                Path out = workDir.resolve(String.format("chunk-%03d.m4a", i++));
++                ffmpeg.cutAudio(input, out, range[0], range[1], cancelSignal);
++                chunks.add(new Chunk(range[0], range[1], out));
++            }
++        } catch (RuntimeException e) {
++            chunks.forEach(c -> {
++                try {
++                    Files.deleteIfExists(c.file());
++                } catch (Exception ignored) {
++                    // 清理失败不影响主流程
++                }
++            });
++            throw e;
++        }
++        return chunks;
++    }
++
++    /**
++     * 纯函数：返回切分区间 [start,end] 列表；无需切分返回空列表。
++     * 贪心：窗口 [pos, pos+maxSec] 内取"静音中点 > pos+maxSec/2"的最大者；无则 pos+maxSec。
++     */
++    static List<double[]> cutPoints(double durationSec, List<FfmpegService.Silence> silences, double maxSec) {
++        if (durationSec <= maxSec) return List.of();
++        List<double[]> ranges = new ArrayList<>();
++        double start = 0;
++        while (durationSec - start > maxSec) {
++            double windowEnd = start + maxSec;
++            double best = -1;
++            for (FfmpegService.Silence s : silences) {
++                double mid = (s.startSec() + s.endSec()) / 2;
++                if (mid > start + maxSec / 2 && mid <= windowEnd && mid > best) {
++                    best = mid;
++                }
++            }
++            double cut = best > 0 ? best : windowEnd;
++            ranges.add(new double[]{start, cut});
++            start = cut;
++        }
++        ranges.add(new double[]{start, durationSec});
++        return ranges;
++    }
++}
+diff --git a/backend/src/main/java/com/waveminer/waveminer/media/FfmpegService.java b/backend/src/main/java/com/waveminer/waveminer/media/FfmpegService.java
+index bc4d4ff..0248653 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/media/FfmpegService.java
++++ b/backend/src/main/java/com/waveminer/waveminer/media/FfmpegService.java
+@@ -1,22 +1,25 @@
+ package com.waveminer.waveminer.media;
+ 
+ import com.waveminer.waveminer.config.AppProperties;
+ import java.nio.file.Path;
+ import java.time.Duration;
++import java.util.ArrayList;
+ import java.util.List;
+ import java.util.function.BooleanSupplier;
+ import tools.jackson.databind.JsonNode;
+ import tools.jackson.databind.ObjectMapper;
+ 
+ public class FfmpegService {
+ 
++    public record Silence(double startSec, double endSec) {}
++
+     public interface Runner {
+         ProcessResult run(List<String> command, Duration timeout, BooleanSupplier cancelSignal);
+ 
+         default ProcessResult run(List<String> command, Duration timeout) {
+             return run(command, timeout, null);
+         }
+     }
+ 
+     private final Runner runner;
+     private final AppProperties props;
+@@ -73,14 +76,74 @@ public class FfmpegService {
+         extractAudio(in, out, null);
+     }
+ 
+     public void extractAudio(Path in, Path out, BooleanSupplier cancelSignal) {
+         ProcessResult r = runner.run(extractAudioCommand(in, out), props.processTimeout(), cancelSignal);
+         if (r.exitCode() != 0) {
+             throw new ProcessFailedException("ffmpeg 提取音频失败:\n" + tail(r.output()));
+         }
+     }
+ 
++    List<String> detectSilencesCommand(Path in) {
++        return List.of(props.getFfmpegPath(), "-i", in.toString(),
++                "-af", "silencedetect=noise=" + trimNum(props.getSilenceThresholdDb()) + "dB:d="
++                        + trimNum(props.getSilenceMinDurationSec()),
++                "-f", "null", "-");
++    }
++
++    static double parseSilenceStart(String line) {
++        int idx = line.indexOf("silence_start:");
++        if (idx < 0) throw new IllegalArgumentException("非 silencedetect 输出行: " + line);
++        return Double.parseDouble(line.substring(idx + "silence_start:".length()).trim());
++    }
++
++    static double parseSilenceEnd(String line) {
++        int idx = line.indexOf("silence_end:");
++        if (idx < 0) throw new IllegalArgumentException("非 silencedetect 输出行: " + line);
++        String rest = line.substring(idx + "silence_end:".length()).trim();
++        int sp = rest.indexOf(' ');
++        return Double.parseDouble(sp < 0 ? rest : rest.substring(0, sp));
++    }
++
++    public List<Silence> detectSilences(Path in) {
++        double duration = probeDurationSeconds(in);
++        ProcessResult r = runner.run(detectSilencesCommand(in), props.processTimeout());
++        if (r.exitCode() != 0) {
++            throw new ProcessFailedException("ffmpeg 静音检测失败:\n" + tail(r.output()));
++        }
++        List<Silence> out = new ArrayList<>();
++        Double openStart = null;
++        for (String line : r.output().split("\n")) {
++            if (line.contains("silence_start:")) {
++                openStart = parseSilenceStart(line);
++            } else if (line.contains("silence_end:") && openStart != null) {
++                out.add(new Silence(openStart, parseSilenceEnd(line)));
++                openStart = null;
++            }
++        }
++        if (openStart != null) {
++            out.add(new Silence(openStart, duration));
++        }
++        return out;
++    }
++
++    List<String> cutAudioCommand(Path in, Path out, double startSec, double endSec) {
++        return List.of(props.getFfmpegPath(), "-y", "-i", in.toString(),
++                "-ss", trimNum(startSec), "-to", trimNum(endSec),
++                "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", out.toString());
++    }
++
++    public void cutAudio(Path in, Path out, double startSec, double endSec, BooleanSupplier cancelSignal) {
++        ProcessResult r = runner.run(cutAudioCommand(in, out, startSec, endSec), props.processTimeout(), cancelSignal);
++        if (r.exitCode() != 0) {
++            throw new ProcessFailedException("ffmpeg 切分音频失败:\n" + tail(r.output()));
++        }
++    }
++
++    private static String trimNum(double v) {
++        return v == Math.rint(v) ? String.valueOf((long) v) : String.valueOf(v);
++    }
++
+     private static String tail(String s) {
+         return s.length() <= 2000 ? s : s.substring(s.length() - 2000);
+     }
+ }
+diff --git a/backend/src/main/resources/application.yml b/backend/src/main/resources/application.yml
+index 3ab2735..62ccec1 100644
+--- a/backend/src/main/resources/application.yml
++++ b/backend/src/main/resources/application.yml
+@@ -20,10 +20,22 @@ spring:
+     virtual:
+       enabled: true
+ app:
+   data-dir: ./data
+   max-concurrent-tasks: 2
+   ffmpeg-path: ffmpeg
+   ffprobe-path: ffprobe
+   yt-dlp-path: yt-dlp
+   process-timeout-seconds: 1800
+   access-token: ""
++  # —— 转写引擎（计划 2）——
++  minimax-base-url: https://api.minimax.cn
++  minimax-model: asr-1.0
++  aliyun-base-url: https://dashscope.aliyuncs.com/api/v1
++  aliyun-model: qwen-audio-3.0-asr-flash-filetrans
++  engine-http-timeout-seconds: 600
++  engine-retry-attempts: 3
++  transcribe-poll-interval-seconds: 5
++  transcribe-timeout-seconds: 7200
++  silence-threshold-db: -35.0
++  silence-min-duration-sec: 0.6
++  merge-gap-ms: 800
+diff --git a/backend/src/test/java/com/waveminer/waveminer/media/AudioSegmenterTest.java b/backend/src/test/java/com/waveminer/waveminer/media/AudioSegmenterTest.java
+new file mode 100644
+index 0000000..645c96f
+--- /dev/null
++++ b/backend/src/test/java/com/waveminer/waveminer/media/AudioSegmenterTest.java
+@@ -0,0 +1,59 @@
++package com.waveminer.waveminer.media;
++
++import java.util.List;
++import org.junit.jupiter.api.Test;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++class AudioSegmenterTest {
++
++    private static FfmpegService.Silence sil(double s, double e) {
++        return new FfmpegService.Silence(s, e);
++    }
++
++    @Test
++    void shortAudioNeedsNoCut() {
++        assertThat(AudioSegmenter.cutPoints(120, List.of(), 500)).isEmpty();
++    }
++
++    @Test
++    void cutsAtSilenceMidpoints() {
++        List<double[]> cuts = AudioSegmenter.cutPoints(900, List.of(sil(490, 494)), 500);
++        assertThat(cuts).hasSize(2);
++        assertThat(cuts.get(0)).containsExactly(0.0, 492.0);
++        assertThat(cuts.get(1)).containsExactly(492.0, 900.0);
++    }
++
++    @Test
++    void multipleCutsAtSilenceMidpoints() {
++        List<double[]> cuts = AudioSegmenter.cutPoints(1200, List.of(sil(490, 494), sil(980, 984)), 500);
++        assertThat(cuts).hasSize(3);
++        assertThat(cuts.get(0)).containsExactly(0.0, 492.0);
++        assertThat(cuts.get(1)).containsExactly(492.0, 982.0);
++        assertThat(cuts.get(2)).containsExactly(982.0, 1200.0);
++    }
++
++    @Test
++    void noSilenceForcesHardCut() {
++        List<double[]> cuts = AudioSegmenter.cutPoints(1200, List.of(), 500);
++        assertThat(cuts).hasSize(3);
++        assertThat(cuts.get(0)).containsExactly(0.0, 500.0);
++        assertThat(cuts.get(1)).containsExactly(500.0, 1000.0);
++        assertThat(cuts.get(2)).containsExactly(1000.0, 1200.0);
++    }
++
++    @Test
++    void silenceNearWindowEndPreferred() {
++        List<double[]> cuts = AudioSegmenter.cutPoints(900, List.of(sil(298, 302), sil(478, 482)), 500);
++        assertThat(cuts).hasSize(2);
++        assertThat(cuts.get(0)).containsExactly(0.0, 480.0);
++        assertThat(cuts.get(1)).containsExactly(480.0, 900.0);
++    }
++
++    @Test
++    void parseSilenceLines() {
++        assertThat(FfmpegService.parseSilenceStart("[silencedetect @ 0x0] silence_start: 12.3456")).isEqualTo(12.3456);
++        assertThat(FfmpegService.parseSilenceEnd(
++                "[silencedetect @ 0x0] silence_end: 13.5 | silence_duration: 1.154")).isEqualTo(13.5);
++    }
++}
+diff --git a/backend/src/test/java/com/waveminer/waveminer/media/FfmpegServiceTest.java b/backend/src/test/java/com/waveminer/waveminer/media/FfmpegServiceTest.java
+index 3ab08c1..d36e5d9 100644
+--- a/backend/src/test/java/com/waveminer/waveminer/media/FfmpegServiceTest.java
++++ b/backend/src/test/java/com/waveminer/waveminer/media/FfmpegServiceTest.java
+@@ -79,18 +79,41 @@ class FfmpegServiceTest {
+ 
+     @Test
+     void hasAudioStreamFailsOnError() {
+         FfmpegService failing = new FfmpegService(
+                 (command, timeout, cancel) -> new ProcessResult(1, "Invalid data"), new AppProperties());
+         assertThatThrownBy(() -> failing.hasAudioStream(Path.of("/v/a.mp4")))
+                 .isInstanceOf(ProcessFailedException.class)
+                 .hasMessageContaining("ffprobe");
+     }
+ 
++    @Test
++    void detectSilencesCommandShapeAndParsing() {
++        FfmpegService svc = new FfmpegService((command, timeout, cancel) -> {
++            lastCommand = command;
++            if (command.get(0).equals("ffprobe")) {
++                return new ProcessResult(0, "{\"format\":{\"duration\":\"30.0\"}}");
++            }
++            return new ProcessResult(0, """
++                    [silencedetect @ 0x0] silence_start: 1.0
++                    [silencedetect @ 0x0] silence_end: 2.0 | silence_duration: 1.0
++                    [silencedetect @ 0x0] silence_start: 25.5
++                    """);
++        }, new AppProperties());
++        List<FfmpegService.Silence> silences = svc.detectSilences(Path.of("/v/a.m4a"));
++        assertThat(lastCommand).contains("-af", "silencedetect=noise=-35dB:d=0.6");
++        assertThat(silences).hasSize(2);
++        assertThat(silences.get(0).startSec()).isEqualTo(1.0);
++        assertThat(silences.get(0).endSec()).isEqualTo(2.0);
++        // 未闭合静音以音频时长收尾
++        assertThat(silences.get(1).startSec()).isEqualTo(25.5);
++        assertThat(silences.get(1).endSec()).isEqualTo(30.0);
++    }
++
+     @Test
+     void directMediaUrlDetection() {
+         assertThat(YtDlpService.isDirectMediaUrl("https://cdn.example.com/movie.mp4")).isTrue();
+         assertThat(YtDlpService.isDirectMediaUrl("https://cdn.example.com/song.MP3")).isTrue();
+         assertThat(YtDlpService.isDirectMediaUrl("https://www.bilibili.com/video/BV1xx")).isFalse();
+         assertThat(YtDlpService.isDirectMediaUrl("https://example.com/watch?v=1")).isFalse();
+     }
+ }

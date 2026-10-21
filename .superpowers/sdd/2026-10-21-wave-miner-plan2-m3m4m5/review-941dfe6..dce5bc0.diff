@@ -1,0 +1,865 @@
+# Review package: 941dfe6ab2bc4dcc394adc2eca884cfb60d4d107..dce5bc0
+
+## Commits
+dce5bc0 feat: TRANSCRIBE 阶段、进度事件总线与转写产物白名单
+
+## Files changed
+ .../waveminer/waveminer/api/TaskController.java    |   7 +-
+ .../waveminer/pipeline/TaskEventPublisher.java     |  47 +++++
+ .../waveminer/waveminer/pipeline/TaskRunner.java   |  14 +-
+ .../waveminer/waveminer/stage/TranscribeStage.java | 185 +++++++++++++++++++
+ .../waveminer/waveminer/store/ArtifactStore.java   |  12 +-
+ .../waveminer/pipeline/TaskRunnerTest.java         |  18 +-
+ .../waveminer/stage/TranscribeStageTest.java       | 200 +++++++++++++++++++++
+ .../waveminer/store/ArtifactStoreTest.java         |  25 +++
+ 8 files changed, 501 insertions(+), 7 deletions(-)
+
+## Diff
+diff --git a/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java b/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java
+index bcf14f2..197bfbd 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java
++++ b/backend/src/main/java/com/waveminer/waveminer/api/TaskController.java
+@@ -59,21 +59,24 @@ public class TaskController {
+             Map.entry("flv", MediaType.parseMediaType("video/x-flv")),
+             Map.entry("ts", MediaType.parseMediaType("video/mp2t")),
+             Map.entry("avi", MediaType.parseMediaType("video/x-msvideo")),
+             Map.entry("mp3", MediaType.parseMediaType("audio/mpeg")),
+             Map.entry("m4a", MediaType.parseMediaType("audio/mp4")),
+             Map.entry("wav", MediaType.parseMediaType("audio/wav")),
+             Map.entry("aac", MediaType.parseMediaType("audio/aac")),
+             Map.entry("flac", MediaType.parseMediaType("audio/flac")),
+             Map.entry("opus", MediaType.parseMediaType("audio/opus")),
+             Map.entry("ogg", MediaType.parseMediaType("audio/ogg")),
+-            Map.entry("aiff", MediaType.parseMediaType("audio/aiff")));
++            Map.entry("aiff", MediaType.parseMediaType("audio/aiff")),
++            Map.entry("json", MediaType.parseMediaType("application/json")),
++            Map.entry("srt", MediaType.parseMediaType("application/x-subrip")),
++            Map.entry("txt", MediaType.parseMediaType("text/plain;charset=UTF-8")));
+ 
+     private final PipelineService pipeline;
+     private final TaskRepository repo;
+     private final ArtifactStore artifacts;
+     private final TaskRunner runner;
+ 
+     public TaskController(PipelineService pipeline, TaskRepository repo,
+                           ArtifactStore artifacts, TaskRunner runner) {
+         this.pipeline = pipeline;
+         this.repo = repo;
+@@ -140,21 +143,21 @@ public class TaskController {
+     @DeleteMapping("/{id}")
+     public Map<String, Object> delete(@PathVariable String id) throws IOException {
+         requireValidId(id);
+         find(id);
+         runner.cancel(id);
+         repo.delete(id);
+         deleteDirectoryRecursively(artifacts.taskDir(id));
+         return Map.of("ok", true);
+     }
+ 
+-    @GetMapping("/{id}/artifacts/{name}")
++    @GetMapping("/{id}/artifacts/{name:.+}")
+     public ResponseEntity<Object> artifact(@PathVariable String id,
+                                            @PathVariable String name,
+                                            HttpServletRequest request) throws IOException {
+         requireValidId(id);
+         find(id); // 任务不存在 → 404，且不触发目录创建（taskDir 会惰性建目录）
+         if (!artifacts.isAllowedArtifactName(name)) {
+             throw new IllegalArgumentException("非法的产物名称");
+         }
+         Path dir = artifacts.taskDir(id);
+         Path file = dir.resolve(name).normalize();
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskEventPublisher.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskEventPublisher.java
+new file mode 100644
+index 0000000..932a379
+--- /dev/null
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskEventPublisher.java
+@@ -0,0 +1,47 @@
++package com.waveminer.waveminer.pipeline;
++
++import java.time.Instant;
++import java.util.List;
++import java.util.concurrent.CopyOnWriteArrayList;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.stereotype.Component;
++
++@Component
++public class TaskEventPublisher {
++
++    public record TaskEvent(String taskId, String type, String stage, String status, String message, Instant at) {
++        public static TaskEvent stage(String taskId, String stage, String status, String message) {
++            return new TaskEvent(taskId, "stage", stage, status, message, Instant.now());
++        }
++
++        public static TaskEvent progress(String taskId, String stage, String message) {
++            return new TaskEvent(taskId, "progress", stage, null, message, Instant.now());
++        }
++
++        public static TaskEvent task(String taskId, String status) {
++            return new TaskEvent(taskId, "task", null, status, null, Instant.now());
++        }
++    }
++
++    public interface Listener {
++        void onEvent(TaskEvent e);
++    }
++
++    private static final Logger log = LoggerFactory.getLogger(TaskEventPublisher.class);
++    private final List<Listener> listeners = new CopyOnWriteArrayList<>();
++
++    public void addListener(Listener l) { listeners.add(l); }
++
++    public void removeListener(Listener l) { listeners.remove(l); }
++
++    public void publish(TaskEvent e) {
++        for (Listener l : listeners) {
++            try {
++                l.onEvent(e);
++            } catch (RuntimeException ex) {
++                log.warn("任务事件监听器异常: {}", ex.getMessage());
++            }
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java
+index 166c3e6..8bd1fc9 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java
++++ b/backend/src/main/java/com/waveminer/waveminer/pipeline/TaskRunner.java
+@@ -17,30 +17,32 @@ import org.springframework.stereotype.Component;
+ 
+ @Component
+ public class TaskRunner implements PipelineService.Runner {
+ 
+     private static final Logger log = LoggerFactory.getLogger(TaskRunner.class);
+ 
+     private final Semaphore permits;
+     private final Map<StageType, StageHandler> handlers;
+     private final TaskRepository repo;
+     private final ArtifactStore store;
++    private final TaskEventPublisher events;
+     private final Map<String, AtomicBoolean> cancels = new ConcurrentHashMap<>();
+     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
+ 
+     public TaskRunner(AppProperties props, List<StageHandler> handlers,
+-                      TaskRepository repo, ArtifactStore store) {
++                      TaskRepository repo, ArtifactStore store, TaskEventPublisher events) {
+         this.permits = new Semaphore(Math.max(1, props.getMaxConcurrentTasks()));
+         this.handlers = handlers.stream()
+                 .collect(Collectors.toMap(StageHandler::type, Function.identity()));
+         this.repo = repo;
+         this.store = store;
++        this.events = events;
+     }
+ 
+     @Override
+     public void submit(Task task) {
+         if (!inFlight.add(task.getId())) {
+             throw new IllegalStateException("任务正在执行中，请勿重复提交");
+         }
+         try {
+             repo.updateTaskStatus(task.getId(), TaskStatus.PENDING, null);
+             cancels.computeIfAbsent(task.getId(), k -> new AtomicBoolean(false));
+@@ -75,35 +77,37 @@ public class TaskRunner implements PipelineService.Runner {
+             Thread.currentThread().interrupt();
+             cancels.remove(taskId);
+             inFlight.remove(taskId);
+             return;
+         }
+         try {
+             execute(taskId);
+         } catch (Exception e) {
+             log.error("任务执行异常 task={}", taskId, e);
+             repo.updateTaskStatus(taskId, TaskStatus.FAILED, "内部错误: " + e.getMessage());
++            events.publish(TaskEventPublisher.TaskEvent.task(taskId, "FAILED"));
+             repo.updateFinishedAt(taskId, Instant.now());
+         } finally {
+             cancels.remove(taskId);
+             inFlight.remove(taskId);
+             permits.release();
+         }
+     }
+ 
+     private void execute(String taskId) {
+         Task task = repo.find(taskId).orElse(null);
+         AtomicBoolean cancel = cancels.get(taskId);
+         if (task == null || cancel == null) return;
+ 
+         if (cancel.get()) {
+             repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
++            events.publish(TaskEventPublisher.TaskEvent.task(taskId, "CANCELLED"));
+             repo.updateFinishedAt(taskId, Instant.now());
+             return;
+         }
+ 
+         repo.updateTaskStatus(taskId, TaskStatus.RUNNING, null);
+         repo.updateStartedAt(taskId, Instant.now());
+ 
+         TaskContext ctx = new TaskContext(
+                 taskId,
+                 store.taskDir(taskId),
+@@ -115,56 +119,64 @@ public class TaskRunner implements PipelineService.Runner {
+                 task.getLanguage(),
+                 task.isDiarize());
+ 
+         Map<StageType, TaskStage> stored = repo.stagesOf(taskId).stream()
+                 .collect(Collectors.toMap(TaskStage::getStageType, Function.identity()));
+ 
+         for (StageType type : task.getStages()) {
+             if (cancel.get()) {
+                 markRemainingSkipped(task, type);
+                 repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
++                events.publish(TaskEventPublisher.TaskEvent.task(taskId, "CANCELLED"));
+                 repo.updateFinishedAt(taskId, Instant.now());
+                 return;
+             }
+             TaskStage previous = stored.get(type);
+             if (previous != null && previous.getStatus() == StageStatus.DONE
+                     && previous.getArtifactPath() != null && !previous.getArtifactPath().isBlank()) {
+                 ctx.putArtifact(type, previous.getArtifactPath());
+                 continue;
+             }
+             StageHandler handler = handlers.get(type);
+             if (handler == null) {
+                 fail(taskId, type, "没有可用的处理器: " + type);
+                 return;
+             }
+             repo.updateStage(taskId, type, StageStatus.RUNNING, null, null);
++            events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "RUNNING", null));
+             try {
+                 handler.run(ctx);
+             } catch (TaskCancelledException e) {
+                 repo.updateStage(taskId, type, StageStatus.FAILED, "已取消", null);
++                events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "FAILED", "已取消"));
+                 repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
++                events.publish(TaskEventPublisher.TaskEvent.task(taskId, "CANCELLED"));
+                 repo.updateFinishedAt(taskId, Instant.now());
+                 return;
+             } catch (Exception e) {
+                 fail(taskId, type, e.getMessage() == null ? e.toString() : e.getMessage());
+                 return;
+             }
+             repo.updateStage(taskId, type, StageStatus.DONE, null, ctx.artifactNameOf(type));
++            events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "DONE", null));
+         }
+ 
+         repo.updateTaskStatus(taskId, TaskStatus.COMPLETED, null);
++        events.publish(TaskEventPublisher.TaskEvent.task(taskId, "COMPLETED"));
+         repo.updateFinishedAt(taskId, Instant.now());
+     }
+ 
+     private void fail(String taskId, StageType type, String message) {
+         repo.updateStage(taskId, type, StageStatus.FAILED, message, null);
++        events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "FAILED", message));
+         repo.updateTaskStatus(taskId, TaskStatus.FAILED, message);
++        events.publish(TaskEventPublisher.TaskEvent.task(taskId, "FAILED"));
+         repo.updateFinishedAt(taskId, Instant.now());
+     }
+ 
+     private void markRemainingSkipped(Task task, StageType from) {
+         boolean skipping = false;
+         for (StageType type : task.getStages()) {
+             if (type == from) skipping = true;
+             if (skipping) repo.updateStage(task.getId(), type, StageStatus.SKIPPED, "已取消", null);
+         }
+     }
+diff --git a/backend/src/main/java/com/waveminer/waveminer/stage/TranscribeStage.java b/backend/src/main/java/com/waveminer/waveminer/stage/TranscribeStage.java
+new file mode 100644
+index 0000000..a95d72f
+--- /dev/null
++++ b/backend/src/main/java/com/waveminer/waveminer/stage/TranscribeStage.java
+@@ -0,0 +1,185 @@
++package com.waveminer.waveminer.stage;
++
++import com.waveminer.waveminer.config.AppProperties;
++import com.waveminer.waveminer.engine.EngineCancelledException;
++import com.waveminer.waveminer.engine.EngineException;
++import com.waveminer.waveminer.engine.EngineRegistry;
++import com.waveminer.waveminer.engine.ProgressCallback;
++import com.waveminer.waveminer.engine.Segment;
++import com.waveminer.waveminer.engine.SegmentMerger;
++import com.waveminer.waveminer.engine.TranscribeOptions;
++import com.waveminer.waveminer.engine.TranscribeResult;
++import com.waveminer.waveminer.engine.TranscriptFormat;
++import com.waveminer.waveminer.engine.TranscriptionEngine;
++import com.waveminer.waveminer.media.AudioSegmenter;
++import com.waveminer.waveminer.media.FfmpegService;
++import com.waveminer.waveminer.media.MediaTypes;
++import com.waveminer.waveminer.pipeline.StageHandler;
++import com.waveminer.waveminer.pipeline.StageType;
++import com.waveminer.waveminer.pipeline.TaskCancelledException;
++import com.waveminer.waveminer.pipeline.TaskContext;
++import com.waveminer.waveminer.pipeline.TaskEventPublisher;
++import java.io.IOException;
++import java.io.UncheckedIOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Comparator;
++import java.util.List;
++import org.springframework.stereotype.Component;
++
++@Component
++public class TranscribeStage implements StageHandler {
++
++    private final EngineRegistry registry;
++    private final FfmpegService ffmpeg;
++    private final AudioSegmenter segmenter;
++    private final TaskEventPublisher events;
++    private final AppProperties props;
++
++    public TranscribeStage(EngineRegistry registry, FfmpegService ffmpeg,
++                           AudioSegmenter segmenter, TaskEventPublisher events, AppProperties props) {
++        this.registry = registry;
++        this.ffmpeg = ffmpeg;
++        this.segmenter = segmenter;
++        this.events = events;
++        this.props = props;
++    }
++
++    @Override
++    public StageType type() { return StageType.TRANSCRIBE; }
++
++    @Override
++    public void run(TaskContext ctx) {
++        TranscriptionEngine engine = registry.get(ctx.engineId());
++        Path input = resolveInput(ctx);
++        if (ctx.cancelRequested()) {
++            throw new TaskCancelledException();
++        }
++        long durationMs = Math.round(ffmpeg.probeDurationSeconds(input) * 1000);
++        if (MediaTypes.isVideo(input.getFileName().toString())) {
++            Path audio = ctx.dir().resolve("audio.m4a");
++            ffmpeg.extractAudio(input, audio, ctx::cancelRequested);
++            input = audio;
++            durationMs = Math.round(ffmpeg.probeDurationSeconds(input) * 1000);
++        }
++
++        long maxDur = engine.info().maxDurationSec();
++        TranscribeOptions options = TranscribeOptions.of(ctx.language(), ctx.diarize());
++        List<Segment> segments;
++        try {
++            if (durationMs > maxDur * 1000) {
++                segments = transcribeInChunks(ctx, engine, input, options, maxDur);
++            } else {
++                events.publish(TaskEventPublisher.TaskEvent.progress(ctx.taskId(), "TRANSCRIBE", "正在调用转写引擎…"));
++                TranscribeResult r = engine.transcribe(input, options, callback(ctx));
++                archiveRaw(ctx, engine.id() + ".json", r.rawResponse());
++                segments = r.segments();
++            }
++        } catch (EngineCancelledException e) {
++            throw new TaskCancelledException();
++        } catch (EngineException e) {
++            if (e.getRawResponse() != null) {
++                archiveRaw(ctx, engine.id() + ".json", e.getRawResponse());
++            }
++            throw e;
++        }
++
++        writeArtifacts(ctx, engine.id(), durationMs, segments);
++        events.publish(TaskEventPublisher.TaskEvent.progress(ctx.taskId(), "TRANSCRIBE",
++                "转写完成：" + segments.size() + " 段"));
++    }
++
++    private Path resolveInput(TaskContext ctx) {
++        Path input = ctx.artifactOf(StageType.AUDIO_EXTRACT);
++        if (input == null) input = ctx.artifactOf(StageType.DOWNLOAD);
++        if (input == null) input = ctx.uploadedFile().orElse(null);
++        if (input == null) {
++            throw new IllegalStateException("转写缺少音频/视频输入（需要上游产物或上传文件）");
++        }
++        return input;
++    }
++
++    private List<Segment> transcribeInChunks(TaskContext ctx, TranscriptionEngine engine,
++                                             Path input, TranscribeOptions options, long maxDur) {
++        Path chunksDir = ctx.dir().resolve("chunks");
++        events.publish(TaskEventPublisher.TaskEvent.progress(ctx.taskId(), "TRANSCRIBE",
++                "音频超过引擎时长上限（" + maxDur + " 秒），开始静音切分"));
++        List<AudioSegmenter.Chunk> chunks = segmenter.split(input, chunksDir, maxDur, ctx::cancelRequested);
++        List<Segment> all = new ArrayList<>();
++        try {
++            int i = 1;
++            for (AudioSegmenter.Chunk chunk : chunks) {
++                if (ctx.cancelRequested()) {
++                    throw new TaskCancelledException();
++                }
++                events.publish(TaskEventPublisher.TaskEvent.progress(ctx.taskId(), "TRANSCRIBE",
++                        "转写分片 " + i + "/" + chunks.size()));
++                TranscribeResult r = engine.transcribe(chunk.file(), options, callback(ctx));
++                archiveRaw(ctx, engine.id() + "-chunk-%03d.json".formatted(i), r.rawResponse());
++                long offsetMs = Math.round(chunk.startSec() * 1000);
++                for (Segment s : r.segments()) {
++                    all.add(new Segment(s.startMs() + offsetMs, s.endMs() + offsetMs, s.text(), s.speaker()));
++                }
++                i++;
++            }
++        } catch (RuntimeException e) {
++            // 失败保留分片目录便于排查
++            throw e;
++        }
++        deleteRecursively(chunksDir);
++        return SegmentMerger.merge(all, props.getMergeGapMs());
++    }
++
++    private void writeArtifacts(TaskContext ctx, String engineId, long durationMs, List<Segment> segments) {
++        write(ctx.dir().resolve("transcript.json"),
++                TranscriptFormat.toJson(engineId, ctx.language(), durationMs, segments));
++        write(ctx.dir().resolve("transcript.srt"), TranscriptFormat.toSrt(segments));
++        write(ctx.dir().resolve("transcript.txt"), TranscriptFormat.toTxt(segments));
++        ctx.putArtifact(StageType.TRANSCRIBE, "transcript.json");
++    }
++
++    private ProgressCallback callback(TaskContext ctx) {
++        return new ProgressCallback() {
++            @Override public void update(String message) {
++                events.publish(TaskEventPublisher.TaskEvent.progress(ctx.taskId(), "TRANSCRIBE", message));
++            }
++
++            @Override public boolean cancelled() { return ctx.cancelRequested(); }
++        };
++    }
++
++    private void archiveRaw(TaskContext ctx, String name, String raw) {
++        if (raw == null) return;
++        try {
++            Path dir = Files.createDirectories(ctx.dir().resolve("engine_raw"));
++            write(dir.resolve(name), raw);
++        } catch (IOException e) {
++            throw new UncheckedIOException("存档引擎原始响应失败", e);
++        }
++    }
++
++    private static void write(Path file, String content) {
++        try {
++            Files.writeString(file, content, StandardCharsets.UTF_8);
++        } catch (IOException e) {
++            throw new UncheckedIOException("写入产物失败: " + file.getFileName(), e);
++        }
++    }
++
++    private static void deleteRecursively(Path dir) {
++        if (!Files.exists(dir)) return;
++        try (var walk = Files.walk(dir)) {
++            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
++                try {
++                    Files.delete(p);
++                } catch (IOException ignored) {
++                    // 清理失败不阻塞主流程
++                }
++            });
++        } catch (IOException ignored) {
++            // 同上
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/waveminer/waveminer/store/ArtifactStore.java b/backend/src/main/java/com/waveminer/waveminer/store/ArtifactStore.java
+index 1975366..19b91d6 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/store/ArtifactStore.java
++++ b/backend/src/main/java/com/waveminer/waveminer/store/ArtifactStore.java
+@@ -37,35 +37,43 @@ public class ArtifactStore {
+                     .filter(p -> p.getFileName().toString().startsWith("source."))
+                     .filter(p -> MediaTypes.isMedia(p.getFileName().toString()))
+                     .findFirst();
+         } catch (IOException e) {
+             throw new UncheckedIOException(e);
+         }
+     }
+ 
+     public boolean isAllowedArtifactName(String name) {
+         if (name == null || name.isBlank()) return false;
++        if (name.equals("transcript.json") || name.equals("transcript.srt") || name.equals("transcript.txt")) {
++            return true;
++        }
++        if (name.startsWith("engine_raw/")) {
++            String rest = name.substring("engine_raw/".length());
++            return !rest.isBlank() && !rest.contains("/") && !rest.contains("..")
++                    && rest.matches("[A-Za-z0-9._-]+");
++        }
+         if (name.contains("/") || name.contains("\\") || name.contains("..")) return false;
+         if (name.equals("audio.m4a")) return true;
+         if (name.startsWith("source.")) {
+             String ext = name.substring("source.".length());
+             return !ext.isBlank() && MediaTypes.ALL_EXTENSIONS.contains(ext.toLowerCase(Locale.ROOT));
+         }
+         return false;
+     }
+ 
+     public List<ArtifactInfo> listArtifacts(String taskId) {
+         Path dir = taskDir(taskId);
+-        try (Stream<Path> files = Files.list(dir)) {
++        try (Stream<Path> files = Files.walk(dir, 2)) {
+             return files
+                     .filter(Files::isRegularFile)
+-                    .map(p -> p.getFileName().toString())
++                    .map(p -> dir.relativize(p).toString().replace('\\', '/'))
+                     .filter(this::isAllowedArtifactName)
+                     .map(name -> new ArtifactInfo(name, sizeOf(dir.resolve(name))))
+                     .sorted(Comparator.comparing(ArtifactInfo::name))
+                     .toList();
+         } catch (IOException e) {
+             throw new UncheckedIOException(e);
+         }
+     }
+ 
+     private static long sizeOf(Path p) {
+diff --git a/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java b/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java
+index 7f6cc4f..80bedf1 100644
+--- a/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java
++++ b/backend/src/test/java/com/waveminer/waveminer/pipeline/TaskRunnerTest.java
+@@ -20,37 +20,39 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
+ import static org.assertj.core.api.Assertions.assertThat;
+ import static org.assertj.core.api.Assertions.assertThatThrownBy;
+ 
+ class TaskRunnerTest {
+ 
+     @TempDir
+     Path tmp;
+ 
+     private TaskRepository repo;
+     private TaskRunner runner;
++    private TaskEventPublisher publisher;
+     private final Map<StageType, RuntimeException> failures = new ConcurrentHashMap<>();
+     private final CountDownLatch downloadEntered = new CountDownLatch(1);
+     private volatile CountDownLatch downloadBlocker;
+     private final AtomicInteger downloadInvocations = new AtomicInteger();
+     private final AtomicInteger extractInvocations = new AtomicInteger();
+     private volatile boolean extractSawDownloadArtifact;
+     private volatile boolean downloadWaitsForCancel;
+ 
+     @BeforeEach
+     void setUp() {
+         var jdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:sqlite:" + tmp.resolve("runner-test.db")));
+         jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, engine_id TEXT, language TEXT, diarize INTEGER)");
+         jdbc.execute("CREATE TABLE IF NOT EXISTS task_stage (task_id TEXT NOT NULL, stage_type TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, artifact_path TEXT, PRIMARY KEY (task_id, stage_type))");
+         repo = new TaskRepository(jdbc);
+         var props = new com.waveminer.waveminer.config.AppProperties();
+         props.setDataDir(tmp.toString());
+         var store = new ArtifactStore(props);
++        publisher = new TaskEventPublisher();
+         failures.clear();
+ 
+         StageHandler download = new StageHandler() {
+             @Override public StageType type() { return StageType.DOWNLOAD; }
+             @Override public void run(TaskContext ctx) {
+                 downloadInvocations.incrementAndGet();
+                 if (failures.containsKey(StageType.DOWNLOAD)) throw failures.get(StageType.DOWNLOAD);
+                 downloadEntered.countDown();
+                 CountDownLatch gate = downloadBlocker;
+                 if (gate != null) {
+@@ -82,21 +84,21 @@ class TaskRunnerTest {
+         };
+         StageHandler extract = new StageHandler() {
+             @Override public StageType type() { return StageType.AUDIO_EXTRACT; }
+             @Override public void run(TaskContext ctx) {
+                 extractInvocations.incrementAndGet();
+                 if (failures.containsKey(StageType.AUDIO_EXTRACT)) throw failures.get(StageType.AUDIO_EXTRACT);
+                 extractSawDownloadArtifact = ctx.artifactOf(StageType.DOWNLOAD) != null;
+                 ctx.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
+             }
+         };
+-        runner = new TaskRunner(props, List.of(download, extract), repo, store);
++        runner = new TaskRunner(props, List.of(download, extract), repo, store, publisher);
+     }
+ 
+     private Task insertTask(String id) {
+         Task t = new Task();
+         t.setId(id);
+         t.setSourceType(SourceType.URL);
+         t.setSourceRef("https://e.com/a.mp4");
+         t.setTitle("a.mp4");
+         t.setStages(List.of(StageType.DOWNLOAD, StageType.AUDIO_EXTRACT));
+         t.setStatus(TaskStatus.PENDING);
+@@ -206,23 +208,35 @@ class TaskRunnerTest {
+                 .until(() -> repo.find("dup").orElseThrow().getStatus() == TaskStatus.COMPLETED);
+         Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                 .until(() -> !runner.isInFlight("dup"));
+         assertThat(repo.stagesOf("dup")).allSatisfy(s -> assertThat(s.getStatus()).isEqualTo(StageStatus.DONE));
+     }
+ 
+     @Test
+     void missingHandlerFailsTask() {
+         insertTask("mh");
+         TaskRunner solo = new TaskRunner(new com.waveminer.waveminer.config.AppProperties(),
+-                List.of(), repo, new ArtifactStore(props()));
++                List.of(), repo, new ArtifactStore(props()), new TaskEventPublisher());
+         solo.submit(repo.find("mh").orElseThrow());
+         Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                 .until(() -> repo.find("mh").orElseThrow().getStatus() == TaskStatus.FAILED);
+         assertThat(repo.find("mh").orElseThrow().getErrorMessage()).contains("处理器");
+     }
+ 
++    @Test
++    void publishesStageAndTaskEvents() {
++        java.util.List<TaskEventPublisher.TaskEvent> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
++        publisher.addListener(seen::add);
++        insertTask("ev");
++        runner.submit(repo.find("ev").orElseThrow());
++        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() ->
++                seen.stream().anyMatch(e -> e.type().equals("task")));
++        assertThat(seen).anySatisfy(e -> assertThat(e.type()).isEqualTo("stage"));
++        assertThat(seen).anySatisfy(e -> assertThat(e.status()).isEqualTo("COMPLETED"));
++    }
++
+     private com.waveminer.waveminer.config.AppProperties props() {
+         var props = new com.waveminer.waveminer.config.AppProperties();
+         props.setDataDir(tmp.toString());
+         return props;
+     }
+ }
+diff --git a/backend/src/test/java/com/waveminer/waveminer/stage/TranscribeStageTest.java b/backend/src/test/java/com/waveminer/waveminer/stage/TranscribeStageTest.java
+new file mode 100644
+index 0000000..e375eb6
+--- /dev/null
++++ b/backend/src/test/java/com/waveminer/waveminer/stage/TranscribeStageTest.java
+@@ -0,0 +1,200 @@
++package com.waveminer.waveminer.stage;
++
++import com.waveminer.waveminer.config.AppProperties;
++import com.waveminer.waveminer.engine.EngineException;
++import com.waveminer.waveminer.engine.EngineInfo;
++import com.waveminer.waveminer.engine.EngineRegistry;
++import com.waveminer.waveminer.engine.Segment;
++import com.waveminer.waveminer.engine.TranscribeOptions;
++import com.waveminer.waveminer.engine.TranscribeResult;
++import com.waveminer.waveminer.engine.TranscriptionEngine;
++import com.waveminer.waveminer.media.AudioSegmenter;
++import com.waveminer.waveminer.media.FfmpegService;
++import com.waveminer.waveminer.pipeline.StageType;
++import com.waveminer.waveminer.pipeline.TaskCancelledException;
++import com.waveminer.waveminer.pipeline.TaskContext;
++import com.waveminer.waveminer.pipeline.TaskEventPublisher;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import java.util.concurrent.CopyOnWriteArrayList;
++import java.util.concurrent.atomic.AtomicBoolean;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import org.mockito.Mockito;
++import org.springframework.beans.factory.ObjectProvider;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++class TranscribeStageTest {
++
++    @TempDir
++    Path tmp;
++
++    private FfmpegService ffmpeg;
++    private AudioSegmenter segmenter;
++    private TranscriptionEngine engine;
++    private TranscribeStage stage;
++    private TaskEventPublisher publisher;
++    private final List<TaskEventPublisher.TaskEvent> events = new CopyOnWriteArrayList<>();
++
++    @BeforeEach
++    void setUp() {
++        AppProperties props = new AppProperties();
++        props.setDataDir(tmp.toString());
++        ffmpeg = mock(FfmpegService.class);
++        segmenter = mock(AudioSegmenter.class);
++        publisher = new TaskEventPublisher();
++        publisher.addListener(events::add);
++        engine = mock(TranscriptionEngine.class);
++        when(engine.id()).thenReturn("fake");
++        when(engine.info()).thenReturn(new EngineInfo("fake", "假引擎", 500, 50 * 1024 * 1024, true, List.of("zh")));
++
++        @SuppressWarnings("unchecked")
++        ObjectProvider<TranscriptionEngine> provider = mock(ObjectProvider.class);
++        Mockito.when(provider.orderedStream()).thenReturn(java.util.stream.Stream.of(engine));
++        EngineRegistry registry = new EngineRegistry(provider);
++
++        stage = new TranscribeStage(registry, ffmpeg, segmenter, publisher, props);
++    }
++
++    private TaskContext ctx(String id, String url, Path uploaded) throws Exception {
++        Path dir = Files.createDirectories(tmp.resolve(id));
++        return new TaskContext(id, dir, url, uploaded, new AtomicBoolean(false), "fake", "zh", false);
++    }
++
++    private Path audio(String task, String name) throws Exception {
++        Path p = tmp.resolve(task).resolve(name);
++        Files.createDirectories(p.getParent());
++        Files.writeString(p, "audio");
++        return p;
++    }
++
++    @Test
++    void transcribesAudioInputAndWritesArtifacts() throws Exception {
++        TaskContext c = ctx("t1", null, null);
++        Path in = audio("t1", "audio.m4a");
++        c.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
++        when(ffmpeg.probeDurationSeconds(any())).thenReturn(12.744);
++        when(engine.transcribe(eq(in), eq(new TranscribeOptions("zh", false)), any()))
++                .thenReturn(new TranscribeResult(
++                        List.of(new Segment(100, 1660, "你好", 1)), "{\"segments\":[]}"));
++
++        stage.run(c);
++
++        assertThat(c.artifactOf(StageType.TRANSCRIBE)).hasFileName("transcript.json");
++        Path dir = c.dir();
++        assertThat(Files.readString(dir.resolve("transcript.json"))).contains("\"engine\":\"fake\"");
++        assertThat(Files.readString(dir.resolve("transcript.srt")))
++                .contains("00:00:00,100 --> 00:00:01,660");
++        assertThat(Files.readString(dir.resolve("transcript.txt"))).contains("[00:00] 你好");
++        assertThat(Files.readString(dir.resolve("engine_raw").resolve("fake.json"))).contains("segments");
++        assertThat(events).anySatisfy(e -> assertThat(e.message()).contains("转写完成"));
++    }
++
++    @Test
++    void videoInputExtractsAudioFirst() throws Exception {
++        TaskContext c = ctx("t2", null, null);
++        Path video = audio("t2", "source.mp4");
++        c.putArtifact(StageType.DOWNLOAD, "source.mp4");
++        Path outAudio = c.dir().resolve("audio.m4a");
++        Mockito.doAnswer(inv -> {
++            Files.writeString(outAudio, "audio");
++            return null;
++        }).when(ffmpeg).extractAudio(eq(video), eq(outAudio), any());
++        when(ffmpeg.probeDurationSeconds(any())).thenReturn(5.0);
++        when(engine.transcribe(eq(outAudio), any(), any()))
++                .thenReturn(new TranscribeResult(List.of(new Segment(0, 500, "hi", null)), "{}"));
++
++        stage.run(c);
++
++        Mockito.verify(ffmpeg).extractAudio(eq(video), eq(outAudio), any());
++        assertThat(Files.exists(c.dir().resolve("transcript.json"))).isTrue();
++    }
++
++    @Test
++    void longAudioSplitsOffsetsAndMerges() throws Exception {
++        TaskContext c = ctx("t3", null, null);
++        Path in = audio("t3", "audio.m4a");
++        c.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
++        when(ffmpeg.probeDurationSeconds(any())).thenReturn(1200.0);
++        Path chunk1 = c.dir().resolve("chunks").resolve("chunk-001.m4a");
++        Path chunk2 = c.dir().resolve("chunks").resolve("chunk-002.m4a");
++        Files.createDirectories(chunk1.getParent());
++        Files.writeString(chunk1, "c1");
++        Files.writeString(chunk2, "c2");
++        when(segmenter.split(eq(in), any(Path.class), eq(500L), any())).thenReturn(List.of(
++                new AudioSegmenter.Chunk(0, 492, chunk1),
++                new AudioSegmenter.Chunk(492, 1200, chunk2)));
++        when(engine.transcribe(eq(chunk1), any(), any())).thenReturn(new TranscribeResult(
++                List.of(new Segment(0, 1000, "前半。", 1)), "{\"c\":1}"));
++        when(engine.transcribe(eq(chunk2), any(), any())).thenReturn(new TranscribeResult(
++                List.of(new Segment(0, 800, "后半。", 1)), "{\"c\":2}"));
++
++        stage.run(c);
++
++        String json = Files.readString(c.dir().resolve("transcript.json"));
++        assertThat(json).contains("\"startMs\":492000"); // 第二片整体偏移 492s
++        assertThat(Files.readString(c.dir().resolve("engine_raw").resolve("fake-chunk-001.json"))).contains("\"c\":1");
++        assertThat(Files.exists(c.dir().resolve("chunks"))).isFalse(); // 成功后清理
++    }
++
++    @Test
++    void engineFailureArchivesRawAndPropagates() throws Exception {
++        TaskContext c = ctx("t4", null, null);
++        Path in = audio("t4", "audio.m4a");
++        c.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
++        when(ffmpeg.probeDurationSeconds(any())).thenReturn(10.0);
++        when(engine.transcribe(eq(in), any(), any()))
++                .thenThrow(new EngineException("引擎炸了", "{\"error\":1}"));
++
++        assertThatThrownBy(() -> stage.run(c))
++                .isInstanceOf(EngineException.class)
++                .hasMessageContaining("引擎炸了");
++        assertThat(Files.readString(c.dir().resolve("engine_raw").resolve("fake.json"))).contains("\"error\":1");
++    }
++
++    @Test
++    void engineCancellationBecomesTaskCancelled() throws Exception {
++        TaskContext c = ctx("t5", null, null);
++        Path in = audio("t5", "audio.m4a");
++        c.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
++        when(ffmpeg.probeDurationSeconds(any())).thenReturn(10.0);
++        when(engine.transcribe(eq(in), any(), any()))
++                .thenThrow(new com.waveminer.waveminer.engine.EngineCancelledException("已取消"));
++
++        assertThatThrownBy(() -> stage.run(c)).isInstanceOf(TaskCancelledException.class);
++    }
++
++    @Test
++    void unknownEngineFails() throws Exception {
++        TaskContext c = new TaskContext("t6", Files.createDirectories(tmp.resolve("t6")),
++                null, null, new AtomicBoolean(false), "no-such", "auto", false);
++        assertThatThrownBy(() -> stage.run(c))
++                .isInstanceOf(EngineException.class)
++                .hasMessageContaining("未知转写引擎");
++    }
++
++    @Test
++    void missingInputFails() throws Exception {
++        TaskContext c = ctx("t7", "https://e.com/a", null);
++        assertThatThrownBy(() -> stage.run(c))
++                .isInstanceOf(IllegalStateException.class)
++                .hasMessageContaining("输入");
++    }
++
++    @Test
++    void cancelRequestedStopsBeforeEngine() throws Exception {
++        Path uploaded = audio("t8", "source.mp3");
++        TaskContext c = new TaskContext("t8", Files.createDirectories(tmp.resolve("t8")),
++                null, uploaded, new AtomicBoolean(true), "fake", "auto", false);
++        assertThatThrownBy(() -> stage.run(c)).isInstanceOf(TaskCancelledException.class);
++        Mockito.verify(engine, Mockito.never()).transcribe(any(), any(), any());
++    }
++}
+diff --git a/backend/src/test/java/com/waveminer/waveminer/store/ArtifactStoreTest.java b/backend/src/test/java/com/waveminer/waveminer/store/ArtifactStoreTest.java
+index 2a80663..9e65db6 100644
+--- a/backend/src/test/java/com/waveminer/waveminer/store/ArtifactStoreTest.java
++++ b/backend/src/test/java/com/waveminer/waveminer/store/ArtifactStoreTest.java
+@@ -51,20 +51,45 @@ class ArtifactStoreTest {
+ 
+         assertThat(ArtifactStore.findSourceFile(dir)).hasValueSatisfying(p ->
+                 assertThat(p.getFileName().toString()).isEqualTo("source.mp4"));
+ 
+         List<ArtifactInfo> artifacts = s.listArtifacts("abc");
+         assertThat(artifacts).extracting(ArtifactInfo::name)
+                 .containsExactlyInAnyOrder("source.mp4", "audio.m4a");
+         assertThat(artifacts).allSatisfy(a -> assertThat(a.sizeBytes()).isGreaterThan(0));
+     }
+ 
++    @Test
++    void transcriptAndEngineRawAllowed() throws Exception {
++        ArtifactStore s = store();
++        Path dir = s.taskDir("abc");
++        Files.createDirectories(dir.resolve("engine_raw"));
++        Files.writeString(dir.resolve("transcript.json"), "{}");
++        Files.writeString(dir.resolve("transcript.srt"), "");
++        Files.writeString(dir.resolve("transcript.txt"), "");
++        Files.writeString(dir.resolve("engine_raw").resolve("minimax.json"), "{}");
++        Files.writeString(dir.resolve("engine_raw").resolve("bad name!.json"), "{}");
++
++        assertThat(s.isAllowedArtifactName("transcript.json")).isTrue();
++        assertThat(s.isAllowedArtifactName("transcript.srt")).isTrue();
++        assertThat(s.isAllowedArtifactName("transcript.txt")).isTrue();
++        assertThat(s.isAllowedArtifactName("engine_raw/minimax.json")).isTrue();
++        assertThat(s.isAllowedArtifactName("engine_raw/bad name!.json")).isFalse();
++        assertThat(s.isAllowedArtifactName("engine_raw/../../etc")).isFalse();
++        assertThat(s.isAllowedArtifactName("engine_raw/")).isFalse();
++        assertThat(s.isAllowedArtifactName("engine_raw")).isFalse();
++
++        List<ArtifactInfo> artifacts = s.listArtifacts("abc");
++        assertThat(artifacts).extracting(ArtifactInfo::name).contains(
++                "transcript.json", "transcript.srt", "transcript.txt", "engine_raw/minimax.json");
++    }
++
+     @Test
+     void extensionHelpers() {
+         assertThat(MediaTypes.extension("A.MP4")).isEqualTo("mp4");
+         assertThat(MediaTypes.extension("noext")).isEmpty();
+         assertThat(MediaTypes.isVideo("x.mov")).isTrue();
+         assertThat(MediaTypes.isVideo("x.mp3")).isFalse();
+         assertThat(MediaTypes.isMedia("x.flac")).isTrue();
+         assertThat(MediaTypes.isMedia("x.txt")).isFalse();
+     }
+ }

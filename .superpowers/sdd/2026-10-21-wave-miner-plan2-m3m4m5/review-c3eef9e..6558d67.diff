@@ -1,0 +1,101 @@
+# Review package: c3eef9e..6558d67
+
+## Commits
+6558d67 fix: 阿里云引擎下载结果失败时附带原始响应与存档提示
+
+## Files changed
+ .../waveminer/engine/AliyunFiletransEngine.java    |  3 +-
+ .../engine/AliyunFiletransEngineTest.java          | 37 ++++++++++++++++++++++
+ 2 files changed, 39 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/backend/src/main/java/com/waveminer/waveminer/engine/AliyunFiletransEngine.java b/backend/src/main/java/com/waveminer/waveminer/engine/AliyunFiletransEngine.java
+index b24b497..9cb9250 100644
+--- a/backend/src/main/java/com/waveminer/waveminer/engine/AliyunFiletransEngine.java
++++ b/backend/src/main/java/com/waveminer/waveminer/engine/AliyunFiletransEngine.java
+@@ -200,21 +200,22 @@ public class AliyunFiletransEngine implements TranscriptionEngine {
+         }
+     }
+ 
+     private String downloadResult(String url) {
+         if (url == null || url.isBlank()) {
+             throw new EngineException("转写结果缺少 transcription_url");
+         }
+         EngineHttpClient.EngineHttpResponse resp = http.send(
+                 HttpRequest.newBuilder(URI.create(url)).timeout(props.engineHttpTimeout()).GET().build());
+         if (resp.statusCode() != 200) {
+-            throw new EngineException("下载转写结果失败（HTTP " + resp.statusCode() + "）");
++            throw new EngineException("下载转写结果失败（HTTP " + resp.statusCode() + "）。"
++                    + "原始响应已存档到 engine_raw/", resp.body());
+         }
+         return resp.body();
+     }
+ 
+     private static void checkCancelled(ProgressCallback progress) {
+         if (progress.cancelled()) {
+             throw new EngineCancelledException("转写已取消");
+         }
+     }
+ 
+diff --git a/backend/src/test/java/com/waveminer/waveminer/engine/AliyunFiletransEngineTest.java b/backend/src/test/java/com/waveminer/waveminer/engine/AliyunFiletransEngineTest.java
+index 1101cf6..a9535e1 100644
+--- a/backend/src/test/java/com/waveminer/waveminer/engine/AliyunFiletransEngineTest.java
++++ b/backend/src/test/java/com/waveminer/waveminer/engine/AliyunFiletransEngineTest.java
+@@ -190,20 +190,57 @@ class AliyunFiletransEngineTest {
+ 
+             assertThatThrownBy(() -> engine.transcribe(audio, TranscribeOptions.of("auto", false),
+                     ProgressCallback.noop()))
+                     .isInstanceOf(EngineException.class)
+                     .hasMessageContaining("InvalidFile.DownloadFailed");
+         } finally {
+             wire.stop();
+         }
+     }
+ 
++    @Test
++    void downloadFailureCarriesRawResponseAndArchiveHint() throws Exception {
++        WireMockServer wire = new WireMockServer(WireMockConfiguration.options().dynamicPort());
++        wire.start();
++        try {
++            wire.stubFor(get(urlMatching("/api/v1/uploads.*"))
++                    .willReturn(aResponse().withBody(hermeticPolicy(wire))));
++            wire.stubFor(post(urlEqualTo("/upload")).willReturn(aResponse().withStatus(200)));
++            wire.stubFor(post(urlEqualTo("/api/v1/services/audio/asr/transcription"))
++                    .willReturn(aResponse().withBody(String.format(SUBMIT_OK, "task-3"))));
++            wire.stubFor(post(urlEqualTo("/api/v1/tasks/task-3"))
++                    .willReturn(aResponse().withBody("""
++                            {"output":{"task_id":"task-3","task_status":"SUCCEEDED",
++                              "results":[{"file_url":"oss://x/a.m4a","subtask_status":"SUCCEEDED",
++                                "transcription_url":"%s/result.json"}]}}
++                            """.formatted(wire.baseUrl()))));
++            // 5xx 会被 EngineHttpClient 重试层拦截，downloadResult 非 200 分支由 4xx 触发
++            wire.stubFor(get(urlEqualTo("/result.json"))
++                    .willReturn(aResponse().withStatus(404).withBody("oss-error")));
++
++            AliyunFiletransEngine engine = engine(wire, props(wire));
++            Path audio = tmpDir.resolve("d.m4a");
++            Files.writeString(audio, "x");
++
++            assertThatThrownBy(() -> engine.transcribe(audio, TranscribeOptions.of("auto", false),
++                    ProgressCallback.noop()))
++                    .isInstanceOfSatisfying(EngineException.class, e -> {
++                        assertThat(e.getMessage())
++                                .contains("下载转写结果失败")
++                                .contains("原始响应已存档到 engine_raw/");
++                        assertThat(e.getRawResponse()).isNotNull().contains("oss-error");
++                    });
++        } finally {
++            wire.stop();
++        }
++    }
++
+     @Test
+     void missingKeyFailsEarly() throws Exception {
+         WireMockServer wire = new WireMockServer(WireMockConfiguration.options().dynamicPort());
+         wire.start();
+         try {
+             EngineKeyProvider keys = mock(EngineKeyProvider.class);
+             when(keys.getKey("aliyun-filetrans")).thenReturn(null);
+             AliyunFiletransEngine engine = new AliyunFiletransEngine(new EngineHttpClient(props(wire)), keys, props(wire));
+             Path audio = tmpDir.resolve("c.m4a");
+             Files.writeString(audio, "x");
