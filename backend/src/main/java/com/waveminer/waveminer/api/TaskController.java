@@ -149,6 +149,7 @@ public class TaskController {
                                            @PathVariable String name,
                                            HttpServletRequest request) throws IOException {
         requireValidId(id);
+        find(id); // 任务不存在 → 404，且不触发目录创建（taskDir 会惰性建目录）
         if (!artifacts.isAllowedArtifactName(name)) {
             throw new IllegalArgumentException("非法的产物名称");
         }

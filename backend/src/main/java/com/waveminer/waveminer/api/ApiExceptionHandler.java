@@ -41,7 +41,8 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler({MultipartException.class, MissingServletRequestPartException.class})
     public ResponseEntity<Map<String, String>> multipart(Exception e) {
-        return error(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "上传内容无效: " + e.getMessage());
+        log.warn("上传内容无效", e);
+        return error(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "上传内容无效");
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
@@ -57,7 +58,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> internal(Exception e) {
         log.error("API 内部错误", e);
-        return error(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL", "服务器内部错误: " + e.getMessage());
+        return error(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL", "服务器内部错误，请稍后重试或查看服务端日志");
     }
 
     private ResponseEntity<Map<String, String>> error(HttpStatus status, String code, String message) {

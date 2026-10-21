@@ -43,6 +43,7 @@ class TaskApiTest {
 
     @Autowired MockMvc mvc;
     @Autowired com.waveminer.waveminer.store.ArtifactStore store;
+    @Autowired com.waveminer.waveminer.config.AppProperties props;
 
     @MockitoBean FfmpegService ffmpeg;
     @MockitoBean YtDlpService ytDlp;
@@ -131,10 +132,32 @@ class TaskApiTest {
 
     @Test
     void invalidArtifactNameReturns400() throws Exception {
-        // 名称白名单校验先于任何磁盘访问：合法 UUID 但任务不存在也不会创建目录
-        mvc.perform(get("/api/tasks/00000000-0000-0000-0000-000000000000/artifacts/foo.txt"))
+        Mockito.doAnswer(inv -> {
+            Path dir = inv.getArgument(1);
+            Files.writeString(dir.resolve("source.mp4"), "v");
+            return null;
+        }).when(ytDlp).download(Mockito.anyString(), Mockito.any());
+
+        MvcResult created = mvc.perform(multipart("/api/tasks")
+                        .param("url", "https://example.com/bad-name")
+                        .param("stages", "DOWNLOAD"))
+                .andExpect(status().isOk()).andReturn();
+        String id = waitCompleted(createTask(created));
+
+        mvc.perform(get("/api/tasks/" + id + "/artifacts/foo.txt"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("非法的产物名称"));
+    }
+
+    @Test
+    void artifactForUnknownTaskReturns404WithoutCreatingDir() throws Exception {
+        String unknown = "00000000-0000-0000-0000-000000000000";
+        mvc.perform(get("/api/tasks/" + unknown + "/artifacts/source.mp4"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("任务不存在"));
+        // 404 不得留下孤儿空目录（taskDir 惰性建目录，故用数据目录根推算路径断言）
+        Path root = Path.of(props.getDataDir()).toAbsolutePath().normalize();
+        assertThat(Files.notExists(root.resolve(unknown))).isTrue();
     }
 
     @Test
