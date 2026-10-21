@@ -22,6 +22,7 @@ public class AccessTokenInterceptor implements HandlerInterceptor {
         if (given == null || given.isBlank()) {
             given = request.getParameter("token"); // 媒体标签无法带自定义 header
         }
+        if (given == null) given = ""; // 保持恒时比较：缺失按空串处理，走 401
         if (MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8), given.getBytes(StandardCharsets.UTF_8))) {
             return true;
         }
