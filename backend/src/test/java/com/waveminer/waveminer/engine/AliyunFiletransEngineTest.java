@@ -21,21 +21,19 @@ import static org.mockito.Mockito.when;
 
 class AliyunFiletransEngineTest {
 
-    /** 官方 SDK OSSUtils 定义的 getPolicy 响应结构 */
+    /** 真实 DashScope GET /uploads?action=getPolicy 响应：凭证位于顶层 data 字段（非 output.data） */
     private static final String POLICY_JSON = """
             {
-              "request_id": "r1",
-              "output": {
-                "data": {
-                  "upload_host": "https://dashscope-file-transfer.oss-cn-beijing.aliyuncs.com",
-                  "oss_access_key_id": "STS.xxx",
-                  "signature": "sig123",
-                  "policy": "pol123",
-                  "upload_dir": "asr/filetrans/2026-10-21/abc",
-                  "x_oss_object_acl": "private",
-                  "x_oss_forbid_overwrite": "true"
-                }
-              }
+              "data": {
+                "upload_host": "https://dashscope-file-transfer.oss-cn-beijing.aliyuncs.com",
+                "oss_access_key_id": "STS.xxx",
+                "signature": "sig123",
+                "policy": "pol123",
+                "upload_dir": "asr/filetrans/2026-10-21/abc",
+                "x_oss_object_acl": "private",
+                "x_oss_forbid_overwrite": "true"
+              },
+              "request_id": "r1"
             }""";
 
     /** 官方文档 transcription_url JSON 结构 */
@@ -69,11 +67,47 @@ class AliyunFiletransEngineTest {
     }
 
     @Test
-    void policyErrorFails() {
+    void codeErrorFails() {
         assertThatThrownBy(() -> AliyunFiletransEngine.parsePolicy(
                         "{\"code\":\"InvalidApiKey\",\"message\":\"bad key\"}"))
                 .isInstanceOf(EngineException.class)
                 .hasMessageContaining("上传凭证");
+    }
+
+    @Test
+    void missingDataFails() {
+        assertThatThrownBy(() -> AliyunFiletransEngine.parsePolicy("{\"request_id\":\"r\"}"))
+                .isInstanceOf(EngineException.class)
+                .hasMessageContaining("响应缺少 data");
+    }
+
+    /** T13 真机回归：与真机响应完全同构（凭证位于顶层 data，含 expire_in_seconds 等多余字段）必须正常解析 */
+    @Test
+    void parsesRealDevicePolicyIgnoringExtraFields() {
+        String realDeviceJson = """
+                {
+                  "data": {
+                    "policy": "pol-real",
+                    "signature": "sig-real",
+                    "upload_dir": "dashscope-instant/ws/2026-10-21/uuid",
+                    "upload_host": "https://dashscope-file-mgr.oss-cn-beijing.aliyuncs.com",
+                    "expire_in_seconds": 300,
+                    "max_file_size_mb": 1024,
+                    "capacity_limit_mb": 999999999,
+                    "oss_access_key_id": "LTAI.xxx",
+                    "x_oss_object_acl": "private",
+                    "x_oss_forbid_overwrite": "true"
+                  },
+                  "request_id": "uuid-real"
+                }""";
+        AliyunFiletransEngine.UploadPolicy p = AliyunFiletransEngine.parsePolicy(realDeviceJson);
+        assertThat(p.uploadHost()).isEqualTo("https://dashscope-file-mgr.oss-cn-beijing.aliyuncs.com");
+        assertThat(p.ossAccessKeyId()).isEqualTo("LTAI.xxx");
+        assertThat(p.signature()).isEqualTo("sig-real");
+        assertThat(p.policy()).isEqualTo("pol-real");
+        assertThat(p.uploadDir()).isEqualTo("dashscope-instant/ws/2026-10-21/uuid");
+        assertThat(p.xOssObjectAcl()).isEqualTo("private");
+        assertThat(p.xOssForbidOverwrite()).isEqualTo("true");
     }
 
     @Test

@@ -241,9 +241,10 @@ public class AliyunFiletransEngine implements TranscriptionEngine {
                 throw new EngineException("获取上传凭证失败: " + root.path("code").asText()
                         + " " + root.path("message").asText(""), json);
             }
-            JsonNode data = root.path("output").path("data");
+            // 真实 DashScope GET /uploads?action=getPolicy 响应的凭证位于顶层 data（转写任务接口才是 output 信封）
+            JsonNode data = root.path("data");
             if (data.isMissingNode() || data.path("upload_host").asText("").isBlank()) {
-                throw new EngineException("获取上传凭证失败：响应缺少 output.data", json);
+                throw new EngineException("获取上传凭证失败：响应缺少 data", json);
             }
             return new UploadPolicy(
                     data.path("upload_host").asText(),
