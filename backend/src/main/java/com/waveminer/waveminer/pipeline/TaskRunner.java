@@ -24,16 +24,18 @@ public class TaskRunner implements PipelineService.Runner {
     private final Map<StageType, StageHandler> handlers;
     private final TaskRepository repo;
     private final ArtifactStore store;
+    private final TaskEventPublisher events;
     private final Map<String, AtomicBoolean> cancels = new ConcurrentHashMap<>();
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
     public TaskRunner(AppProperties props, List<StageHandler> handlers,
-                      TaskRepository repo, ArtifactStore store) {
+                      TaskRepository repo, ArtifactStore store, TaskEventPublisher events) {
         this.permits = new Semaphore(Math.max(1, props.getMaxConcurrentTasks()));
         this.handlers = handlers.stream()
                 .collect(Collectors.toMap(StageHandler::type, Function.identity()));
         this.repo = repo;
         this.store = store;
+        this.events = events;
     }
 
     @Override
@@ -82,6 +84,7 @@ public class TaskRunner implements PipelineService.Runner {
         } catch (Exception e) {
             log.error("任务执行异常 task={}", taskId, e);
             repo.updateTaskStatus(taskId, TaskStatus.FAILED, "内部错误: " + e.getMessage());
+            events.publish(TaskEventPublisher.TaskEvent.task(taskId, "FAILED"));
             repo.updateFinishedAt(taskId, Instant.now());
         } finally {
             cancels.remove(taskId);
@@ -97,6 +100,7 @@ public class TaskRunner implements PipelineService.Runner {
 
         if (cancel.get()) {
             repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
+            events.publish(TaskEventPublisher.TaskEvent.task(taskId, "CANCELLED"));
             repo.updateFinishedAt(taskId, Instant.now());
             return;
         }
@@ -122,6 +126,7 @@ public class TaskRunner implements PipelineService.Runner {
             if (cancel.get()) {
                 markRemainingSkipped(task, type);
                 repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
+                events.publish(TaskEventPublisher.TaskEvent.task(taskId, "CANCELLED"));
                 repo.updateFinishedAt(taskId, Instant.now());
                 return;
             }
@@ -137,11 +142,14 @@ public class TaskRunner implements PipelineService.Runner {
                 return;
             }
             repo.updateStage(taskId, type, StageStatus.RUNNING, null, null);
+            events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "RUNNING", null));
             try {
                 handler.run(ctx);
             } catch (TaskCancelledException e) {
                 repo.updateStage(taskId, type, StageStatus.FAILED, "已取消", null);
+                events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "FAILED", "已取消"));
                 repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
+                events.publish(TaskEventPublisher.TaskEvent.task(taskId, "CANCELLED"));
                 repo.updateFinishedAt(taskId, Instant.now());
                 return;
             } catch (Exception e) {
@@ -149,15 +157,19 @@ public class TaskRunner implements PipelineService.Runner {
                 return;
             }
             repo.updateStage(taskId, type, StageStatus.DONE, null, ctx.artifactNameOf(type));
+            events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "DONE", null));
         }
 
         repo.updateTaskStatus(taskId, TaskStatus.COMPLETED, null);
+        events.publish(TaskEventPublisher.TaskEvent.task(taskId, "COMPLETED"));
         repo.updateFinishedAt(taskId, Instant.now());
     }
 
     private void fail(String taskId, StageType type, String message) {
         repo.updateStage(taskId, type, StageStatus.FAILED, message, null);
+        events.publish(TaskEventPublisher.TaskEvent.stage(taskId, type.name(), "FAILED", message));
         repo.updateTaskStatus(taskId, TaskStatus.FAILED, message);
+        events.publish(TaskEventPublisher.TaskEvent.task(taskId, "FAILED"));
         repo.updateFinishedAt(taskId, Instant.now());
     }
 

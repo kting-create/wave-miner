@@ -59,6 +59,31 @@ class ArtifactStoreTest {
     }
 
     @Test
+    void transcriptAndEngineRawAllowed() throws Exception {
+        ArtifactStore s = store();
+        Path dir = s.taskDir("abc");
+        Files.createDirectories(dir.resolve("engine_raw"));
+        Files.writeString(dir.resolve("transcript.json"), "{}");
+        Files.writeString(dir.resolve("transcript.srt"), "");
+        Files.writeString(dir.resolve("transcript.txt"), "");
+        Files.writeString(dir.resolve("engine_raw").resolve("minimax.json"), "{}");
+        Files.writeString(dir.resolve("engine_raw").resolve("bad name!.json"), "{}");
+
+        assertThat(s.isAllowedArtifactName("transcript.json")).isTrue();
+        assertThat(s.isAllowedArtifactName("transcript.srt")).isTrue();
+        assertThat(s.isAllowedArtifactName("transcript.txt")).isTrue();
+        assertThat(s.isAllowedArtifactName("engine_raw/minimax.json")).isTrue();
+        assertThat(s.isAllowedArtifactName("engine_raw/bad name!.json")).isFalse();
+        assertThat(s.isAllowedArtifactName("engine_raw/../../etc")).isFalse();
+        assertThat(s.isAllowedArtifactName("engine_raw/")).isFalse();
+        assertThat(s.isAllowedArtifactName("engine_raw")).isFalse();
+
+        List<ArtifactInfo> artifacts = s.listArtifacts("abc");
+        assertThat(artifacts).extracting(ArtifactInfo::name).contains(
+                "transcript.json", "transcript.srt", "transcript.txt", "engine_raw/minimax.json");
+    }
+
+    @Test
     void extensionHelpers() {
         assertThat(MediaTypes.extension("A.MP4")).isEqualTo("mp4");
         assertThat(MediaTypes.extension("noext")).isEmpty();

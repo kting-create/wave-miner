@@ -27,6 +27,7 @@ class TaskRunnerTest {
 
     private TaskRepository repo;
     private TaskRunner runner;
+    private TaskEventPublisher publisher;
     private final Map<StageType, RuntimeException> failures = new ConcurrentHashMap<>();
     private final CountDownLatch downloadEntered = new CountDownLatch(1);
     private volatile CountDownLatch downloadBlocker;
@@ -44,6 +45,7 @@ class TaskRunnerTest {
         var props = new com.waveminer.waveminer.config.AppProperties();
         props.setDataDir(tmp.toString());
         var store = new ArtifactStore(props);
+        publisher = new TaskEventPublisher();
         failures.clear();
 
         StageHandler download = new StageHandler() {
@@ -89,7 +91,7 @@ class TaskRunnerTest {
                 ctx.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
             }
         };
-        runner = new TaskRunner(props, List.of(download, extract), repo, store);
+        runner = new TaskRunner(props, List.of(download, extract), repo, store, publisher);
     }
 
     private Task insertTask(String id) {
@@ -213,11 +215,23 @@ class TaskRunnerTest {
     void missingHandlerFailsTask() {
         insertTask("mh");
         TaskRunner solo = new TaskRunner(new com.waveminer.waveminer.config.AppProperties(),
-                List.of(), repo, new ArtifactStore(props()));
+                List.of(), repo, new ArtifactStore(props()), new TaskEventPublisher());
         solo.submit(repo.find("mh").orElseThrow());
         Awaitility.await().atMost(5, TimeUnit.SECONDS)
                 .until(() -> repo.find("mh").orElseThrow().getStatus() == TaskStatus.FAILED);
         assertThat(repo.find("mh").orElseThrow().getErrorMessage()).contains("处理器");
+    }
+
+    @Test
+    void publishesStageAndTaskEvents() {
+        java.util.List<TaskEventPublisher.TaskEvent> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
+        publisher.addListener(seen::add);
+        insertTask("ev");
+        runner.submit(repo.find("ev").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() ->
+                seen.stream().anyMatch(e -> e.type().equals("task")));
+        assertThat(seen).anySatisfy(e -> assertThat(e.type()).isEqualTo("stage"));
+        assertThat(seen).anySatisfy(e -> assertThat(e.status()).isEqualTo("COMPLETED"));
     }
 
     private com.waveminer.waveminer.config.AppProperties props() {

@@ -66,7 +66,10 @@ public class TaskController {
             Map.entry("flac", MediaType.parseMediaType("audio/flac")),
             Map.entry("opus", MediaType.parseMediaType("audio/opus")),
             Map.entry("ogg", MediaType.parseMediaType("audio/ogg")),
-            Map.entry("aiff", MediaType.parseMediaType("audio/aiff")));
+            Map.entry("aiff", MediaType.parseMediaType("audio/aiff")),
+            Map.entry("json", MediaType.parseMediaType("application/json")),
+            Map.entry("srt", MediaType.parseMediaType("application/x-subrip")),
+            Map.entry("txt", MediaType.parseMediaType("text/plain;charset=UTF-8")));
 
     private final PipelineService pipeline;
     private final TaskRepository repo;
@@ -147,7 +150,7 @@ public class TaskController {
         return Map.of("ok", true);
     }
 
-    @GetMapping("/{id}/artifacts/{name}")
+    @GetMapping("/{id}/artifacts/{name:.+}")
     public ResponseEntity<Object> artifact(@PathVariable String id,
                                            @PathVariable String name,
                                            HttpServletRequest request) throws IOException {

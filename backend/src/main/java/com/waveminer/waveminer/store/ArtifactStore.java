@@ -44,6 +44,14 @@ public class ArtifactStore {
 
     public boolean isAllowedArtifactName(String name) {
         if (name == null || name.isBlank()) return false;
+        if (name.equals("transcript.json") || name.equals("transcript.srt") || name.equals("transcript.txt")) {
+            return true;
+        }
+        if (name.startsWith("engine_raw/")) {
+            String rest = name.substring("engine_raw/".length());
+            return !rest.isBlank() && !rest.contains("/") && !rest.contains("..")
+                    && rest.matches("[A-Za-z0-9._-]+");
+        }
         if (name.contains("/") || name.contains("\\") || name.contains("..")) return false;
         if (name.equals("audio.m4a")) return true;
         if (name.startsWith("source.")) {
@@ -55,10 +63,10 @@ public class ArtifactStore {
 
     public List<ArtifactInfo> listArtifacts(String taskId) {
         Path dir = taskDir(taskId);
-        try (Stream<Path> files = Files.list(dir)) {
+        try (Stream<Path> files = Files.walk(dir, 2)) {
             return files
                     .filter(Files::isRegularFile)
-                    .map(p -> p.getFileName().toString())
+                    .map(p -> dir.relativize(p).toString().replace('\\', '/'))
                     .filter(this::isAllowedArtifactName)
                     .map(name -> new ArtifactInfo(name, sizeOf(dir.resolve(name))))
                     .sorted(Comparator.comparing(ArtifactInfo::name))
