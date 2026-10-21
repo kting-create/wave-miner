@@ -5,6 +5,7 @@ import com.waveminer.waveminer.store.ArtifactStore;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,6 +25,7 @@ public class TaskRunner implements PipelineService.Runner {
     private final TaskRepository repo;
     private final ArtifactStore store;
     private final Map<String, AtomicBoolean> cancels = new ConcurrentHashMap<>();
+    private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
     public TaskRunner(AppProperties props, List<StageHandler> handlers,
                       TaskRepository repo, ArtifactStore store) {
@@ -36,9 +38,21 @@ public class TaskRunner implements PipelineService.Runner {
 
     @Override
     public void submit(Task task) {
-        repo.updateTaskStatus(task.getId(), TaskStatus.PENDING, null);
-        cancels.computeIfAbsent(task.getId(), k -> new AtomicBoolean(false));
-        Thread.ofVirtual().name("wave-miner-task-" + task.getId()).start(() -> runTask(task.getId()));
+        if (!inFlight.add(task.getId())) {
+            throw new IllegalStateException("任务正在执行中，请勿重复提交");
+        }
+        try {
+            repo.updateTaskStatus(task.getId(), TaskStatus.PENDING, null);
+            cancels.computeIfAbsent(task.getId(), k -> new AtomicBoolean(false));
+            Thread.ofVirtual().name("wave-miner-task-" + task.getId()).start(() -> runTask(task.getId()));
+        } catch (RuntimeException e) {
+            inFlight.remove(task.getId());
+            throw e;
+        }
+    }
+
+    public boolean isInFlight(String taskId) {
+        return inFlight.contains(taskId);
     }
 
     public boolean cancel(String taskId) {
@@ -60,6 +74,7 @@ public class TaskRunner implements PipelineService.Runner {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             cancels.remove(taskId);
+            inFlight.remove(taskId);
             return;
         }
         try {
@@ -70,6 +85,7 @@ public class TaskRunner implements PipelineService.Runner {
             repo.updateFinishedAt(taskId, Instant.now());
         } finally {
             cancels.remove(taskId);
+            inFlight.remove(taskId);
             permits.release();
         }
     }

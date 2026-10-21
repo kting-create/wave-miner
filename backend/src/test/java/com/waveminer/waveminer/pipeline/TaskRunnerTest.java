@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +17,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TaskRunnerTest {
 
@@ -25,6 +27,8 @@ class TaskRunnerTest {
     private TaskRepository repo;
     private TaskRunner runner;
     private final Map<StageType, RuntimeException> failures = new ConcurrentHashMap<>();
+    private final CountDownLatch downloadEntered = new CountDownLatch(1);
+    private volatile CountDownLatch downloadBlocker;
 
     @BeforeEach
     void setUp() {
@@ -41,6 +45,16 @@ class TaskRunnerTest {
             @Override public StageType type() { return StageType.DOWNLOAD; }
             @Override public void run(TaskContext ctx) {
                 if (failures.containsKey(StageType.DOWNLOAD)) throw failures.get(StageType.DOWNLOAD);
+                downloadEntered.countDown();
+                CountDownLatch gate = downloadBlocker;
+                if (gate != null) {
+                    try {
+                        gate.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                }
                 try {
                     Files.writeString(ctx.dir().resolve("source.mp4"), "v");
                 } catch (Exception e) {
@@ -104,6 +118,25 @@ class TaskRunnerTest {
         runner.submit(repo.find("cc").orElseThrow());
         Awaitility.await().atMost(5, TimeUnit.SECONDS)
                 .until(() -> repo.find("cc").orElseThrow().getStatus() == TaskStatus.CANCELLED);
+    }
+
+    @Test
+    void duplicateSubmitWhileInFlightIsRefusedAndFirstRunCompletes() throws Exception {
+        insertTask("dup");
+        CountDownLatch gate = new CountDownLatch(1);
+        downloadBlocker = gate;
+        runner.submit(repo.find("dup").orElseThrow());
+        assertThat(downloadEntered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(runner.isInFlight("dup")).isTrue();
+        assertThatThrownBy(() -> runner.submit(repo.find("dup").orElseThrow()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("任务正在执行中，请勿重复提交");
+        gate.countDown();
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("dup").orElseThrow().getStatus() == TaskStatus.COMPLETED);
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> !runner.isInFlight("dup"));
+        assertThat(repo.stagesOf("dup")).allSatisfy(s -> assertThat(s.getStatus()).isEqualTo(StageStatus.DONE));
     }
 
     @Test
