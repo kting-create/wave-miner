@@ -27,3 +27,15 @@ app:
   yt-dlp-path: yt-dlp
   process-timeout-seconds: 1800
   access-token: ""
+  # —— 转写引擎（计划 2）——
+  minimax-base-url: https://api.minimax.cn
+  minimax-model: asr-1.0
+  aliyun-base-url: https://dashscope.aliyuncs.com/api/v1
+  aliyun-model: qwen-audio-3.0-asr-flash-filetrans
+  engine-http-timeout-seconds: 600
+  engine-retry-attempts: 3
+  transcribe-poll-interval-seconds: 5
+  transcribe-timeout-seconds: 7200
+  silence-threshold-db: -35.0
+  silence-min-duration-sec: 0.6
+  merge-gap-ms: 800

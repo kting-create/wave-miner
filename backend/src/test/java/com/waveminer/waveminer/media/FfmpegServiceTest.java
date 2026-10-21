@@ -87,6 +87,29 @@ class FfmpegServiceTest {
     }
 
     @Test
+    void detectSilencesCommandShapeAndParsing() {
+        FfmpegService svc = new FfmpegService((command, timeout, cancel) -> {
+            lastCommand = command;
+            if (command.get(0).equals("ffprobe")) {
+                return new ProcessResult(0, "{\"format\":{\"duration\":\"30.0\"}}");
+            }
+            return new ProcessResult(0, """
+                    [silencedetect @ 0x0] silence_start: 1.0
+                    [silencedetect @ 0x0] silence_end: 2.0 | silence_duration: 1.0
+                    [silencedetect @ 0x0] silence_start: 25.5
+                    """);
+        }, new AppProperties());
+        List<FfmpegService.Silence> silences = svc.detectSilences(Path.of("/v/a.m4a"));
+        assertThat(lastCommand).contains("-af", "silencedetect=noise=-35dB:d=0.6");
+        assertThat(silences).hasSize(2);
+        assertThat(silences.get(0).startSec()).isEqualTo(1.0);
+        assertThat(silences.get(0).endSec()).isEqualTo(2.0);
+        // 未闭合静音以音频时长收尾
+        assertThat(silences.get(1).startSec()).isEqualTo(25.5);
+        assertThat(silences.get(1).endSec()).isEqualTo(30.0);
+    }
+
+    @Test
     void directMediaUrlDetection() {
         assertThat(YtDlpService.isDirectMediaUrl("https://cdn.example.com/movie.mp4")).isTrue();
         assertThat(YtDlpService.isDirectMediaUrl("https://cdn.example.com/song.MP3")).isTrue();
