@@ -18,3 +18,7 @@ CREATE TABLE IF NOT EXISTS task_stage (
     artifact_path TEXT,
     PRIMARY KEY (task_id, stage_type)
 );
+CREATE TABLE IF NOT EXISTS app_setting (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
