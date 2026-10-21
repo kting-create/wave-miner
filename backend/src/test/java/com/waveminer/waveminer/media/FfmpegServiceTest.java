@@ -26,9 +26,9 @@ class FfmpegServiceTest {
     @Test
     void extractCommandShape() {
         List<String> cmd = service.extractAudioCommand(Path.of("/v/in.mp4"), Path.of("/v/out.m4a"));
-        assertThat(cmd).startsWith("ffmpeg", "-y", "-i", "/v/in.mp4")
+        assertThat(cmd).startsWith("ffmpeg", "-y", "-i", Path.of("/v/in.mp4").toString())
                 .contains("-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac")
-                .endsWith("/v/out.m4a");
+                .endsWith(Path.of("/v/out.m4a").toString());
     }
 
     @Test
@@ -67,7 +67,7 @@ class FfmpegServiceTest {
         assertThat(lastCommand).containsSubsequence(
                 "-v", "error", "-select_streams", "a",
                 "-show_entries", "stream=index", "-of", "csv=p=0");
-        assertThat(lastCommand).endsWith("/v/a.mp4");
+        assertThat(lastCommand).endsWith(Path.of("/v/a.mp4").toString());
     }
 
     @Test

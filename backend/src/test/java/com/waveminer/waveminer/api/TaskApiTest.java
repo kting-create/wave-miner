@@ -39,6 +39,8 @@ class TaskApiTest {
     static void props(DynamicPropertyRegistry r) {
         r.add("app.data-dir", () -> tmp.toString());
         r.add("app.max-concurrent-tasks", () -> "1");
+        // 非池化连接用完即释放 SQLite 文件句柄，Windows 上 @TempDir 才能删除库文件
+        r.add("spring.datasource.type", () -> "org.springframework.jdbc.datasource.DriverManagerDataSource");
     }
 
     @Autowired MockMvc mvc;
