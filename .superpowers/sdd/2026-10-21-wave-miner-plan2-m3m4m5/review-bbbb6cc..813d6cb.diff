@@ -1,0 +1,80 @@
+# Review package: bbbb6cc..813d6cb
+
+## Commits
+813d6cb fix: artifactUrl 按 / 分段编码避免 Tomcat 拒绝 %2F
+
+
+## Files changed
+ frontend/src/api/client.test.ts | 32 ++++++++++++++++++++++++++++++++
+ frontend/src/api/client.ts      |  3 ++-
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+
+## Diff
+diff --git a/frontend/src/api/client.test.ts b/frontend/src/api/client.test.ts
+new file mode 100644
+index 0000000..6045530
+--- /dev/null
++++ b/frontend/src/api/client.test.ts
+@@ -0,0 +1,32 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { api, setToken } from './client'
++
++const store = new Map<string, string>()
++vi.stubGlobal('localStorage', {
++  getItem: (k: string) => store.get(k) ?? null,
++  setItem: (k: string, v: string) => void store.set(k, v),
++  removeItem: (k: string) => void store.delete(k),
++})
++
++afterEach(() => {
++  store.clear()
++})
++
++describe('api.artifactUrl', () => {
++  it('keeps slash segments and encodes each segment', () => {
++    expect(api.artifactUrl('t1', 'engine_raw/minimax.json')).toBe(
++      '/api/tasks/t1/artifacts/engine_raw/minimax.json',
++    )
++  })
++  it('encodes special characters per segment without encoding slashes', () => {
++    expect(api.artifactUrl('t1', 'engine_raw/bad name!.json')).toBe(
++      '/api/tasks/t1/artifacts/engine_raw/bad%20name!.json',
++    )
++  })
++  it('appends token query when token is set', () => {
++    setToken('abc')
++    expect(api.artifactUrl('t1', 'engine_raw/x.json')).toBe(
++      '/api/tasks/t1/artifacts/engine_raw/x.json?token=abc',
++    )
++  })
++})
+diff --git a/frontend/src/api/client.ts b/frontend/src/api/client.ts
+index bd4440b..cba2a55 100644
+--- a/frontend/src/api/client.ts
++++ b/frontend/src/api/client.ts
+@@ -48,21 +48,22 @@ export const api = {
+     return fetch(`/api/tasks/${id}/cancel`, { method: 'POST', headers: headers() }).then((r) => parse<TaskView>(r))
+   },
+   deleteTask(id: string): Promise<void> {
+     return fetch(`/api/tasks/${id}`, { method: 'DELETE', headers: headers() }).then((r) => parse<void>(r))
+   },
+   toolsHealth(): Promise<ToolHealth[]> {
+     return fetch('/api/tools/health', { headers: headers() }).then((r) => parse<ToolHealth[]>(r))
+   },
+   artifactUrl(taskId: string, name: string): string {
+     const t = getToken()
+-    return `/api/tasks/${taskId}/artifacts/${encodeURIComponent(name)}${t ? `?token=${encodeURIComponent(t)}` : ''}`
++    const encoded = name.split('/').map(encodeURIComponent).join('/')
++    return `/api/tasks/${taskId}/artifacts/${encoded}${t ? `?token=${encodeURIComponent(t)}` : ''}`
+   },
+   getEngines(): Promise<EngineInfo[]> {
+     return fetch('/api/engines', { headers: headers() }).then((r) => parse<EngineInfo[]>(r))
+   },
+   getSettings(): Promise<SettingView[]> {
+     return fetch('/api/settings', { headers: headers() }).then((r) => parse<SettingView[]>(r))
+   },
+   putSetting(key: string, value: string): Promise<SettingView> {
+     return fetch('/api/settings', {
+       method: 'PUT',
+

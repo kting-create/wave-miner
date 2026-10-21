@@ -1,0 +1,40 @@
+# Review package: 8135679..2e55b18
+
+## Commits
+2e55b18 fix: 重试后重建 SSE 订阅恢复实时进度
+
+
+## Files changed
+ frontend/src/views/TaskDetailView.vue | 2 ++
+ 1 file changed, 2 insertions(+)
+
+
+## Diff
+diff --git a/frontend/src/views/TaskDetailView.vue b/frontend/src/views/TaskDetailView.vue
+index e069e9f..ff23eee 100644
+--- a/frontend/src/views/TaskDetailView.vue
++++ b/frontend/src/views/TaskDetailView.vue
+@@ -51,20 +51,22 @@ async function load() {
+   } catch (e) {
+     ElMessage.error((e as Error).message)
+     stopPolling()
+   }
+ }
+ 
+ async function retry() {
+   try {
+     await api.retryTask(id)
+     await load()
++    // 终态时后端已关闭 SSE，任务复活后需重建订阅，否则进度卡静止
++    if (!es) startSse()
+   } catch (e) {
+     ElMessage.error((e as Error).message)
+   }
+ }
+ 
+ async function cancel() {
+   try {
+     await api.cancelTask(id)
+     await load()
+   } catch (e) {
+

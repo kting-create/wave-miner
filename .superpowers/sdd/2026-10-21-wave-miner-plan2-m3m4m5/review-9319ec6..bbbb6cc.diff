@@ -1,0 +1,368 @@
+# Review package: 9319ec6..bbbb6cc
+
+## Commits
+bbbb6cc feat: 新建任务转写引擎/语言配置与时间轴工具
+
+
+## Files changed
+ frontend/src/api/client.ts          | 19 +++++++++-
+ frontend/src/api/types.ts           | 33 +++++++++++++++++
+ frontend/src/utils/timeline.test.ts | 37 +++++++++++++++++++
+ frontend/src/utils/timeline.ts      | 23 ++++++++++++
+ frontend/src/views/NewTaskView.vue  | 71 +++++++++++++++++++++++++++++++++++--
+ 5 files changed, 180 insertions(+), 3 deletions(-)
+
+
+## Diff
+diff --git a/frontend/src/api/client.ts b/frontend/src/api/client.ts
+index d783ae3..bd4440b 100644
+--- a/frontend/src/api/client.ts
++++ b/frontend/src/api/client.ts
+@@ -1,11 +1,11 @@
+-import type { TaskPage, TaskView, ToolHealth } from './types'
++import type { EngineInfo, SettingView, TaskPage, TaskView, ToolHealth } from './types'
+ 
+ const TOKEN_KEY = 'wave-miner-token'
+ 
+ export function getToken(): string {
+   return localStorage.getItem(TOKEN_KEY) ?? ''
+ }
+ 
+ export function setToken(t: string) {
+   localStorage.setItem(TOKEN_KEY, t)
+ }
+@@ -50,11 +50,28 @@ export const api = {
+   deleteTask(id: string): Promise<void> {
+     return fetch(`/api/tasks/${id}`, { method: 'DELETE', headers: headers() }).then((r) => parse<void>(r))
+   },
+   toolsHealth(): Promise<ToolHealth[]> {
+     return fetch('/api/tools/health', { headers: headers() }).then((r) => parse<ToolHealth[]>(r))
+   },
+   artifactUrl(taskId: string, name: string): string {
+     const t = getToken()
+     return `/api/tasks/${taskId}/artifacts/${encodeURIComponent(name)}${t ? `?token=${encodeURIComponent(t)}` : ''}`
+   },
++  getEngines(): Promise<EngineInfo[]> {
++    return fetch('/api/engines', { headers: headers() }).then((r) => parse<EngineInfo[]>(r))
++  },
++  getSettings(): Promise<SettingView[]> {
++    return fetch('/api/settings', { headers: headers() }).then((r) => parse<SettingView[]>(r))
++  },
++  putSetting(key: string, value: string): Promise<SettingView> {
++    return fetch('/api/settings', {
++      method: 'PUT',
++      headers: { ...headers(), 'Content-Type': 'application/json' },
++      body: JSON.stringify({ key, value }),
++    }).then((r) => parse<SettingView>(r))
++  },
++  sseUrl(taskId: string): string {
++    const t = getToken()
++    return `/api/tasks/${taskId}/events${t ? `?token=${encodeURIComponent(t)}` : ''}`
++  },
+ }
+diff --git a/frontend/src/api/types.ts b/frontend/src/api/types.ts
+index 1bc2d61..2bcab0d 100644
+--- a/frontend/src/api/types.ts
++++ b/frontend/src/api/types.ts
+@@ -14,29 +14,62 @@ export interface ArtifactView {
+   sizeBytes: number
+ }
+ 
+ export interface TaskView {
+   id: string
+   title: string
+   sourceType: 'URL' | 'UPLOAD'
+   sourceRef: string | null
+   status: TaskStatus
+   errorMessage: string | null
++  engineId: string | null
++  language: string | null
++  diarize: boolean
+   createdAt: string | null
+   startedAt: string | null
+   finishedAt: string | null
+   stages: StageView[]
+   artifacts: ArtifactView[]
+ }
+ 
+ export interface TaskPage {
+   items: TaskView[]
+   total: number
+   page: number
+   size: number
+ }
+ 
+ export interface ToolHealth {
+   name: string
+   ok: boolean
+   version: string
+ }
++
++export interface EngineInfo {
++  id: string
++  displayName: string
++  maxDurationSec: number
++  maxSizeBytes: number
++  supportsDiarization: boolean
++  languages: string[]
++  configured: boolean
++}
++
++export interface TranscriptSegment {
++  startMs: number
++  endMs: number
++  text: string
++  speaker?: number | null
++}
++
++export interface Transcript {
++  segments: TranscriptSegment[]
++  engine: string
++  language: string
++  durationMs: number
++}
++
++export interface SettingView {
++  key: string
++  value: string
++  configured: boolean
++}
+diff --git a/frontend/src/utils/timeline.test.ts b/frontend/src/utils/timeline.test.ts
+new file mode 100644
+index 0000000..99abba6
+--- /dev/null
++++ b/frontend/src/utils/timeline.test.ts
+@@ -0,0 +1,37 @@
++import { describe, expect, it } from 'vitest'
++import { clampSeekMs, findActiveSegment, formatTimecode } from './timeline'
++import type { TranscriptSegment } from '../api/types'
++
++const segments: TranscriptSegment[] = [
++  { startMs: 0, endMs: 1660, text: 'a', speaker: 1 },
++  { startMs: 2000, endMs: 6100, text: 'b', speaker: 2 },
++  { startMs: 65000, endMs: 70000, text: 'c', speaker: null },
++]
++
++describe('formatTimecode', () => {
++  it('formats mm:ss', () => {
++    expect(formatTimecode(0)).toBe('00:00')
++    expect(formatTimecode(65_000)).toBe('01:05')
++    expect(formatTimecode(3_723_000)).toBe('1:02:03')
++  })
++})
++
++describe('findActiveSegment', () => {
++  it('finds segment containing time', () => {
++    expect(findActiveSegment(segments, 1000)).toBe(0)
++    expect(findActiveSegment(segments, 2100)).toBe(1)
++    expect(findActiveSegment(segments, 65_500)).toBe(2)
++  })
++  it('returns -1 in gaps and out of range', () => {
++    expect(findActiveSegment(segments, 1800)).toBe(-1)
++    expect(findActiveSegment(segments, -1)).toBe(-1)
++    expect(findActiveSegment(segments, 999_999)).toBe(-1)
++  })
++})
++
++describe('clampSeekMs', () => {
++  it('clamps to zero', () => {
++    expect(clampSeekMs(segments[0])).toBe(0)
++    expect(clampSeekMs({ startMs: -5, endMs: 0, text: '' })).toBe(0)
++  })
++})
+diff --git a/frontend/src/utils/timeline.ts b/frontend/src/utils/timeline.ts
+new file mode 100644
+index 0000000..70a9a34
+--- /dev/null
++++ b/frontend/src/utils/timeline.ts
+@@ -0,0 +1,23 @@
++import type { TranscriptSegment } from '../api/types'
++
++export function formatTimecode(ms: number): string {
++  if (!Number.isFinite(ms) || ms < 0) return '00:00'
++  const totalSec = Math.floor(ms / 1000)
++  const h = Math.floor(totalSec / 3600)
++  const m = Math.floor((totalSec % 3600) / 60)
++  const s = totalSec % 60
++  const mm = String(m).padStart(2, '0')
++  const ss = String(s).padStart(2, '0')
++  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
++}
++
++export function findActiveSegment(segments: TranscriptSegment[], timeMs: number): number {
++  for (let i = 0; i < segments.length; i++) {
++    if (timeMs >= segments[i].startMs && timeMs < segments[i].endMs) return i
++  }
++  return -1
++}
++
++export function clampSeekMs(seg: TranscriptSegment): number {
++  return Math.max(0, seg.startMs)
++}
+diff --git a/frontend/src/views/NewTaskView.vue b/frontend/src/views/NewTaskView.vue
+index 76ce7dd..39f1a26 100644
+--- a/frontend/src/views/NewTaskView.vue
++++ b/frontend/src/views/NewTaskView.vue
+@@ -1,27 +1,55 @@
+ <script setup lang="ts">
+-import { onMounted, ref, watch } from 'vue'
++import { computed, onMounted, ref, watch } from 'vue'
+ import { useRouter } from 'vue-router'
+ import { ElMessage } from 'element-plus'
+ import { UploadFilled } from '@element-plus/icons-vue'
+ import { api, getToken, setToken } from '../api/client'
+-import type { ToolHealth } from '../api/types'
++import type { EngineInfo, ToolHealth } from '../api/types'
+ 
+ const router = useRouter()
+ const sourceMode = ref<'url' | 'upload'>('url')
+ const url = ref('')
+ const file = ref<File | null>(null)
+ const stages = ref<string[]>(['DOWNLOAD'])
+ const submitting = ref(false)
+ const tools = ref<ToolHealth[]>([])
+ const tokenInput = ref(getToken())
+ 
++const engines = ref<EngineInfo[]>([])
++const engineId = ref('minimax')
++const language = ref('auto')
++const diarize = ref(false)
++const hasTranscribe = computed(() => stages.value.includes('TRANSCRIBE'))
++const currentEngine = computed(() => engines.value.find((e) => e.id === engineId.value) ?? null)
++const languageOptions = computed(() => ['auto', ...(currentEngine.value?.languages ?? [])])
++
++const LANG_LABELS: Record<string, string> = {
++  auto: '自动检测', zh: '中文', yue: '粤语', en: '英语', ja: '日语', ko: '韩语', th: '泰语',
++  vi: '越南语', id: '印尼语', ms: '马来语', fil: '菲律宾语', ar: '阿拉伯语', tr: '土耳其语',
++  fr: '法语', de: '德语', es: '西班牙语', it: '意大利语', pt: '葡萄牙语', pl: '波兰语',
++  ru: '俄语', uk: '乌克兰语',
++}
++
++async function loadEngines() {
++  try {
++    engines.value = await api.getEngines()
++    if (!engines.value.some((e) => e.id === engineId.value) && engines.value.length > 0) {
++      engineId.value = engines.value[0].id
++    }
++  } catch { /* 忽略，提交时后端仍会校验 */ }
++}
++
++watch(engineId, () => {
++  if (!languageOptions.value.includes(language.value)) language.value = 'auto'
++})
++
+ // 切换输入模式时清理不适用的勾选
+ watch(sourceMode, (mode) => {
+   if (mode === 'upload') {
+     stages.value = stages.value.filter((s) => s !== 'DOWNLOAD')
+   } else if (stages.value.length === 0) {
+     stages.value = ['DOWNLOAD']
+   }
+ })
+ 
+ function onFileChange(f: any) {
+@@ -50,20 +78,25 @@ async function submit() {
+     ElMessage.warning(err)
+     return
+   }
+   const form = new FormData()
+   if (sourceMode.value === 'url') {
+     form.set('url', url.value.trim())
+   } else {
+     form.set('file', file.value!)
+   }
+   form.set('stages', stages.value.join(','))
++  if (hasTranscribe.value) {
++    form.set('engineId', engineId.value)
++    form.set('language', language.value)
++    form.set('diarize', String(diarize.value))
++  }
+   submitting.value = true
+   try {
+     const t = await api.createTask(form)
+     ElMessage.success('任务已创建')
+     router.push(`/tasks/${t.id}`)
+   } catch (e) {
+     ElMessage.error((e as Error).message)
+   } finally {
+     submitting.value = false
+   }
+@@ -77,20 +110,21 @@ async function saveToken() {
+ 
+ async function loadTools() {
+   try {
+     tools.value = await api.toolsHealth()
+   } catch {
+     tools.value = []
+   }
+ }
+ 
+ onMounted(loadTools)
++onMounted(loadEngines)
+ </script>
+ 
+ <template>
+   <div>
+     <el-card>
+       <template #header>新建任务</template>
+       <el-alert
+         v-if="tools.length > 0 && tools.some((t) => !t.ok)"
+         type="error"
+         show-icon
+@@ -120,22 +154,55 @@ onMounted(loadTools)
+         style="margin-bottom: 16px"
+       >
+         <el-icon size="40"><UploadFilled /></el-icon>
+         <div>拖拽视频/音频文件到这里，或点击选择</div>
+       </el-upload>
+ 
+       <div style="margin-bottom: 8px; color: #909399; font-size: 13px">选择要执行的功能（可组合）：</div>
+       <el-checkbox-group v-model="stages" style="margin-bottom: 16px">
+         <el-checkbox value="DOWNLOAD" :disabled="sourceMode === 'upload'">下载视频（输入：链接）</el-checkbox>
+         <el-checkbox value="AUDIO_EXTRACT">提取音频（输入：视频）</el-checkbox>
++        <el-checkbox value="TRANSCRIBE">转写（输入：音频/视频）</el-checkbox>
+       </el-checkbox-group>
+ 
++      <el-card v-if="hasTranscribe" shadow="never" style="margin-bottom: 16px">
++        <template #header>转写设置</template>
++        <el-form label-width="110px">
++          <el-form-item label="转写引擎">
++            <el-select v-model="engineId" style="width: 320px">
++              <el-option
++                v-for="e in engines"
++                :key="e.id"
++                :value="e.id"
++                :label="`${e.displayName}（≤${Math.round(e.maxDurationSec / 60)} 分钟 / ${Math.round(e.maxSizeBytes / 1024 / 1024)}MB）`"
++              />
++            </el-select>
++            <el-alert
++              v-if="currentEngine && !currentEngine.configured"
++              type="warning"
++              :closable="false"
++              show-icon
++              title="该引擎尚未配置 API Key，请到设置页填写或配置环境变量"
++              style="margin-top: 8px"
++            />
++          </el-form-item>
++          <el-form-item label="语言">
++            <el-select v-model="language" style="width: 320px">
++              <el-option v-for="l in languageOptions" :key="l" :value="l" :label="LANG_LABELS[l] ?? l" />
++            </el-select>
++          </el-form-item>
++          <el-form-item v-if="currentEngine?.supportsDiarization" label="说话人分离">
++            <el-switch v-model="diarize" />
++          </el-form-item>
++        </el-form>
++      </el-card>
++
+       <el-button type="primary" :loading="submitting" @click="submit">创建任务</el-button>
+     </el-card>
+ 
+     <el-card style="margin-top: 16px">
+       <template #header>访问令牌（服务端启用时需要）</template>
+       <el-space>
+         <el-input v-model="tokenInput" placeholder="X-Access-Token（可选）" style="width: 320px" show-password />
+         <el-button @click="saveToken">保存</el-button>
+       </el-space>
+       <div v-if="tools.length" style="margin-top: 12px; color: #909399; font-size: 13px">
+
