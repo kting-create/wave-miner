@@ -55,7 +55,8 @@ export const api = {
   },
   artifactUrl(taskId: string, name: string): string {
     const t = getToken()
-    return `/api/tasks/${taskId}/artifacts/${encodeURIComponent(name)}${t ? `?token=${encodeURIComponent(t)}` : ''}`
+    const encoded = name.split('/').map(encodeURIComponent).join('/')
+    return `/api/tasks/${taskId}/artifacts/${encoded}${t ? `?token=${encodeURIComponent(t)}` : ''}`
   },
   getEngines(): Promise<EngineInfo[]> {
     return fetch('/api/engines', { headers: headers() }).then((r) => parse<EngineInfo[]>(r))
