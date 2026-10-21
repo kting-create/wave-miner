@@ -235,3 +235,10 @@ SSE 断线自动重连；上传用分片/流式（axios onUploadProgress 显示�
 2. `qwen-audio-3.0-asr-flash-filetrans` 的请求参数名（与 paraformer filetrans 同构但以文档为准）
 3. MiniMax 中国站 baseUrl 与 key 体系（platform.minimaxi.com / api.minimaxi.com）
 4. yt-dlp 对目标平台（如 B 站）的参数要求
+
+## 14. 跨平台与部署形态（2026-10-21 补充）
+
+- 组件层面无 Windows-only 依赖：Java 21 / Spring Boot / SQLite / Vue / ffmpeg / yt-dlp 全部双平台支持。"某些软件不支持 Linux 就放 Windows 机器上" 的场景不适用本工具自身，但允许按机器分工（如特定站点在 A 机器解析）。
+- Windows 验证：`mvnw.cmd`；工具路径经 `APP_FFMPEG_PATH` 等环境变量配置；测试已跨平台化（ProcessRunnerTest 用 cmd/sh 分支）；产物/SQLite 放本地 NTFS 盘；文件锁删除失败可重试。
+- Linux 服务器部署：jar 自包含无需 Node；远程访问必须 `SERVER_ADDRESS=0.0.0.0` + `APP_ACCESS_TOKEN` 强令牌（默认 127.0.0.1）；建议 systemd + HTTPS 反代；详见 README「Linux 服务器部署」。
+- 对计划 2/3 的约束：新增外部依赖必须双平台可得或做成可插拔；所有新测试禁止仅依赖 Unix 命令（echo/sleep/sh）；文档命令给 bash 与 PowerShell/cmd 两种或注明。
