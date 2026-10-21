@@ -1,0 +1,29 @@
+server:
+  address: 127.0.0.1
+  port: 8080
+spring:
+  application:
+    name: wave-miner
+  datasource:
+    url: jdbc:sqlite:${app.data-dir}/wave-miner.db
+    driver-class-name: org.sqlite.JDBC
+    hikari:
+      maximum-pool-size: 1
+  sql:
+    init:
+      mode: always
+  servlet:
+    multipart:
+      max-file-size: 2GB
+      max-request-size: 2100MB
+  threads:
+    virtual:
+      enabled: true
+app:
+  data-dir: ./data
+  max-concurrent-tasks: 2
+  ffmpeg-path: ffmpeg
+  ffprobe-path: ffprobe
+  yt-dlp-path: yt-dlp
+  process-timeout-seconds: 1800
+  access-token: ""
