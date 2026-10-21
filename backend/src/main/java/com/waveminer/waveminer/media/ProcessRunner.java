@@ -71,6 +71,10 @@ public class ProcessRunner {
             kill(p);
             throw new ProcessFailedException("进程输出读取被中断: " + command.get(0), e);
         }
+        if (reader.isAlive()) {
+            kill(p);
+            throw new ProcessFailedException("读取进程输出超时: " + command.get(0));
+        }
         if (readError.get() != null) {
             kill(p);
             throw new UncheckedIOException(readError.get());

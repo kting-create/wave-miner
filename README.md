@@ -27,6 +27,12 @@ java -jar backend/target/wave-miner-0.0.1-SNAPSHOT.jar
 # 打开 http://127.0.0.1:8080
 ```
 
+仅改后端时可跳过前端构建与拷贝：
+
+```bash
+cd backend && ./mvnw -q package -P '!frontend'
+```
+
 ## 配置（backend/src/main/resources/application.yml 或环境变量）
 
 | 配置 | 默认 | 说明 |

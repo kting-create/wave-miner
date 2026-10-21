@@ -67,10 +67,10 @@ public class YtDlpService {
                 .GET().build();
         try {
             HttpResponse<InputStream> resp = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
-            if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
-                throw new ProcessFailedException("直链下载失败，HTTP " + resp.statusCode());
-            }
             try (InputStream in = resp.body()) {
+                if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+                    throw new ProcessFailedException("直链下载失败，HTTP " + resp.statusCode());
+                }
                 Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {

@@ -28,6 +28,10 @@ function onFileChange(f: any) {
   file.value = f.raw as File
 }
 
+function onFileRemove() {
+  file.value = null
+}
+
 function validate(): string | null {
   if (sourceMode.value === 'url') {
     if (!url.value.trim()) return '请输入视频链接'
@@ -111,6 +115,7 @@ onMounted(loadTools)
         :auto-upload="false"
         :limit="1"
         :on-change="onFileChange"
+        :on-remove="onFileRemove"
         drag
         style="margin-bottom: 16px"
       >

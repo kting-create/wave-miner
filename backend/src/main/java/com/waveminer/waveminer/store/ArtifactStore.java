@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
@@ -47,7 +48,7 @@ public class ArtifactStore {
         if (name.equals("audio.m4a")) return true;
         if (name.startsWith("source.")) {
             String ext = name.substring("source.".length());
-            return !ext.isBlank() && MediaTypes.ALL_EXTENSIONS.contains(ext.toLowerCase());
+            return !ext.isBlank() && MediaTypes.ALL_EXTENSIONS.contains(ext.toLowerCase(Locale.ROOT));
         }
         return false;
     }

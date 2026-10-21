@@ -4,6 +4,7 @@ import com.waveminer.waveminer.config.AppProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 public class AccessTokenInterceptor implements HandlerInterceptor {
@@ -21,7 +22,9 @@ public class AccessTokenInterceptor implements HandlerInterceptor {
         if (given == null || given.isBlank()) {
             given = request.getParameter("token"); // 媒体标签无法带自定义 header
         }
-        if (token.equals(given)) return true;
+        if (MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8), given.getBytes(StandardCharsets.UTF_8))) {
+            return true;
+        }
         response.setStatus(401);
         response.setContentType("application/json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
