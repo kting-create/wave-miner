@@ -4,12 +4,18 @@ import com.waveminer.waveminer.config.AppProperties;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ToolHealthChecker {
 
     public record ToolHealth(String name, boolean ok, String version) {}
+
+    private static final Map<String, String> VERSION_FLAGS = Map.of(
+            "ffmpeg", "-version",
+            "ffprobe", "-version",
+            "yt-dlp", "--version");
 
     private final ProcessRunner runner;
     private final AppProperties props;
@@ -29,7 +35,7 @@ public class ToolHealthChecker {
 
     private ToolHealth check(String name, String bin) {
         try {
-            ProcessResult r = runner.run(List.of(bin, "--version"), Duration.ofSeconds(15));
+            ProcessResult r = runner.run(List.of(bin, VERSION_FLAGS.getOrDefault(name, "--version")), Duration.ofSeconds(15));
             String firstLine = r.output().lines().findFirst().orElse("").trim();
             return new ToolHealth(name, r.exitCode() == 0, r.exitCode() == 0 ? firstLine : "不可用");
         } catch (RuntimeException e) {
