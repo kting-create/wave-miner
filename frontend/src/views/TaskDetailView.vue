@@ -58,6 +58,8 @@ async function retry() {
   try {
     await api.retryTask(id)
     await load()
+    // 终态时后端已关闭 SSE，任务复活后需重建订阅，否则进度卡静止
+    if (!es) startSse()
   } catch (e) {
     ElMessage.error((e as Error).message)
   }
