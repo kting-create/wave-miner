@@ -98,7 +98,7 @@ public class AliyunFiletransEngine implements TranscriptionEngine {
         checkCancelled(progress);
         progress.update("提交转写任务…");
         EngineHttpClient.EngineHttpResponse submitResp = http.send(
-                submitRequest(key, "oss://" + ossBucketOf(policy.uploadHost()) + "/" + objectKey, options));
+                submitRequest(key, "oss://" + objectKey, options));
         if (submitResp.statusCode() != 200) {
             throw new EngineException("提交转写任务失败（HTTP " + submitResp.statusCode() + "）。"
                     + "原始响应已存档到 engine_raw/", submitResp.body());
@@ -120,19 +120,6 @@ public class AliyunFiletransEngine implements TranscriptionEngine {
         return new TranscribeResult(parseTranscription(resultJson), resultJson);
     }
 
-    static String ossBucketOf(String uploadHost) {
-        String host;
-        try {
-            host = URI.create(uploadHost).getHost();
-        } catch (RuntimeException e) {
-            host = null;
-        }
-        if (host == null || !host.contains(".")) {
-            throw new EngineException("上传凭证的 upload_host 异常: " + uploadHost, null);
-        }
-        return host.substring(0, host.indexOf('.'));
-    }
-
     private HttpRequest submitRequest(String key, String fileUrl, TranscribeOptions options) {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("model", props.getAliyunModel());
@@ -152,6 +139,7 @@ public class AliyunFiletransEngine implements TranscriptionEngine {
                 .header("Authorization", "Bearer " + key)
                 .header("Content-Type", "application/json")
                 .header("X-DashScope-Async", "enable")
+                .header("X-DashScope-OssResourceResolve", "enable")
                 .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(root)))
                 .build();
     }
