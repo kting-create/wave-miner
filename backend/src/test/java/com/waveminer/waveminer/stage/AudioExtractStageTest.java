@@ -15,6 +15,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class AudioExtractStageTest {
 
@@ -32,6 +35,7 @@ class AudioExtractStageTest {
         Files.writeString(video, "v");
         c.putArtifact(StageType.DOWNLOAD, "source.mp4");
         FfmpegService ffmpeg = mock(FfmpegService.class);
+        when(ffmpeg.hasAudioStream(eq(video))).thenReturn(true);
         doAnswer(inv -> {
             Files.writeString(c.dir().resolve("audio.m4a"), "a");
             return null;
@@ -49,6 +53,7 @@ class AudioExtractStageTest {
         Files.writeString(uploaded, "v");
         TaskContext c = new TaskContext("t2", dir, null, uploaded, new AtomicBoolean(false));
         FfmpegService ffmpeg = mock(FfmpegService.class);
+        when(ffmpeg.hasAudioStream(any())).thenReturn(true);
         doAnswer(inv -> {
             Files.writeString(dir.resolve("audio.m4a"), "a");
             return null;
@@ -65,5 +70,39 @@ class AudioExtractStageTest {
         assertThatThrownBy(() -> new AudioExtractStage(mock(FfmpegService.class)).run(c))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("输入");
+    }
+
+    @Test
+    void noAudioStreamFailsWithClearChineseMessage() throws Exception {
+        TaskContext c = ctx("t4", null, null);
+        Path video = c.dir().resolve("source.mp4");
+        Files.writeString(video, "v");
+        c.putArtifact(StageType.DOWNLOAD, "source.mp4");
+        FfmpegService ffmpeg = mock(FfmpegService.class);
+        when(ffmpeg.hasAudioStream(eq(video))).thenReturn(false);
+
+        assertThatThrownBy(() -> new AudioExtractStage(ffmpeg).run(c))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("该视频不包含音轨，无法提取音频");
+        verify(ffmpeg, never()).extractAudio(any(), any());
+    }
+
+    @Test
+    void withAudioStreamProceedsToExtractAudio() throws Exception {
+        TaskContext c = ctx("t5", null, null);
+        Path video = c.dir().resolve("source.mp4");
+        Files.writeString(video, "v");
+        c.putArtifact(StageType.DOWNLOAD, "source.mp4");
+        FfmpegService ffmpeg = mock(FfmpegService.class);
+        when(ffmpeg.hasAudioStream(eq(video))).thenReturn(true);
+        doAnswer(inv -> {
+            Files.writeString(c.dir().resolve("audio.m4a"), "a");
+            return null;
+        }).when(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")));
+
+        new AudioExtractStage(ffmpeg).run(c);
+
+        verify(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")));
+        assertThat(c.artifactOf(StageType.AUDIO_EXTRACT)).hasFileName("audio.m4a");
     }
 }

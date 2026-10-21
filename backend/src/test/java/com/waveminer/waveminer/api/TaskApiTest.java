@@ -70,6 +70,7 @@ class TaskApiTest {
             Files.writeString(out, "audio");
             return null;
         }).when(ffmpeg).extractAudio(Mockito.any(), Mockito.any());
+        Mockito.when(ffmpeg.hasAudioStream(Mockito.any())).thenReturn(true);
 
         MvcResult created = mvc.perform(multipart("/api/tasks")
                         .file(mp4())
@@ -199,6 +200,7 @@ class TaskApiTest {
 
     @Test
     void listAndDelete() throws Exception {
+        Mockito.when(ffmpeg.hasAudioStream(Mockito.any())).thenReturn(true);
         mvc.perform(multipart("/api/tasks").file(mp4()).param("stages", "AUDIO_EXTRACT"))
                 .andExpect(status().isOk());
         String body = mvc.perform(get("/api/tasks"))
@@ -214,6 +216,7 @@ class TaskApiTest {
 
     @Test
     void retryOnlyForFailedOrCancelled() throws Exception {
+        Mockito.when(ffmpeg.hasAudioStream(Mockito.any())).thenReturn(true);
         mvc.perform(multipart("/api/tasks").file(mp4()).param("stages", "AUDIO_EXTRACT"))
                 .andExpect(status().isOk());
         String body = mvc.perform(get("/api/tasks")).andReturn().getResponse().getContentAsString();

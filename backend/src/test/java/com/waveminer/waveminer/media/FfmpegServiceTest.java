@@ -56,6 +56,37 @@ class FfmpegServiceTest {
     }
 
     @Test
+    void hasAudioStreamTrueWhenAudioTrackPresent() {
+        FfmpegService withAudio = new FfmpegService(
+                (command, timeout) -> {
+                    lastCommand = command;
+                    return new ProcessResult(0, "0\n");
+                }, new AppProperties());
+        assertThat(withAudio.hasAudioStream(Path.of("/v/a.mp4"))).isTrue();
+        assertThat(lastCommand.get(0)).isEqualTo("ffprobe");
+        assertThat(lastCommand).containsSubsequence(
+                "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0");
+        assertThat(lastCommand).endsWith("/v/a.mp4");
+    }
+
+    @Test
+    void hasAudioStreamFalseWhenNoAudioTrack() {
+        FfmpegService noAudio = new FfmpegService(
+                (command, timeout) -> new ProcessResult(0, ""), new AppProperties());
+        assertThat(noAudio.hasAudioStream(Path.of("/v/a.mp4"))).isFalse();
+    }
+
+    @Test
+    void hasAudioStreamFailsOnError() {
+        FfmpegService failing = new FfmpegService(
+                (command, timeout) -> new ProcessResult(1, "Invalid data"), new AppProperties());
+        assertThatThrownBy(() -> failing.hasAudioStream(Path.of("/v/a.mp4")))
+                .isInstanceOf(ProcessFailedException.class)
+                .hasMessageContaining("ffprobe");
+    }
+
+    @Test
     void directMediaUrlDetection() {
         assertThat(YtDlpService.isDirectMediaUrl("https://cdn.example.com/movie.mp4")).isTrue();
         assertThat(YtDlpService.isDirectMediaUrl("https://cdn.example.com/song.MP3")).isTrue();

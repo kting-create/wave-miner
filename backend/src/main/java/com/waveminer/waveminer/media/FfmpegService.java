@@ -54,6 +54,16 @@ public class FfmpegService {
         }
     }
 
+    public boolean hasAudioStream(Path file) {
+        List<String> command = List.of(props.getFfprobePath(), "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0", file.toString());
+        ProcessResult r = runner.run(command, props.processTimeout());
+        if (r.exitCode() != 0) {
+            throw new ProcessFailedException("ffprobe 探测音轨失败:\n" + tail(r.output()));
+        }
+        return !r.output().isBlank();
+    }
+
     public void extractAudio(Path in, Path out) {
         ProcessResult r = runner.run(extractAudioCommand(in, out), props.processTimeout());
         if (r.exitCode() != 0) {

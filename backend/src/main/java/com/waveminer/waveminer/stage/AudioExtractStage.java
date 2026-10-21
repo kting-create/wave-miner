@@ -26,6 +26,9 @@ public class AudioExtractStage implements StageHandler {
         if (input == null) {
             throw new IllegalStateException("提取音频缺少视频输入（需要下载产物或上传视频文件）");
         }
+        if (!ffmpeg.hasAudioStream(input)) {
+            throw new IllegalStateException("该视频不包含音轨，无法提取音频");
+        }
         Path out = ctx.dir().resolve("audio.m4a");
         ffmpeg.extractAudio(input, out);
         ctx.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
