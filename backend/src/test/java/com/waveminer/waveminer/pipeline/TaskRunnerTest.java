@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +30,9 @@ class TaskRunnerTest {
     private final Map<StageType, RuntimeException> failures = new ConcurrentHashMap<>();
     private final CountDownLatch downloadEntered = new CountDownLatch(1);
     private volatile CountDownLatch downloadBlocker;
+    private final AtomicInteger downloadInvocations = new AtomicInteger();
+    private final AtomicInteger extractInvocations = new AtomicInteger();
+    private volatile boolean extractSawDownloadArtifact;
 
     @BeforeEach
     void setUp() {
@@ -44,6 +48,7 @@ class TaskRunnerTest {
         StageHandler download = new StageHandler() {
             @Override public StageType type() { return StageType.DOWNLOAD; }
             @Override public void run(TaskContext ctx) {
+                downloadInvocations.incrementAndGet();
                 if (failures.containsKey(StageType.DOWNLOAD)) throw failures.get(StageType.DOWNLOAD);
                 downloadEntered.countDown();
                 CountDownLatch gate = downloadBlocker;
@@ -66,7 +71,9 @@ class TaskRunnerTest {
         StageHandler extract = new StageHandler() {
             @Override public StageType type() { return StageType.AUDIO_EXTRACT; }
             @Override public void run(TaskContext ctx) {
+                extractInvocations.incrementAndGet();
                 if (failures.containsKey(StageType.AUDIO_EXTRACT)) throw failures.get(StageType.AUDIO_EXTRACT);
+                extractSawDownloadArtifact = ctx.artifactOf(StageType.DOWNLOAD) != null;
                 ctx.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
             }
         };
@@ -94,6 +101,41 @@ class TaskRunnerTest {
         Awaitility.await().atMost(5, TimeUnit.SECONDS)
                 .until(() -> repo.find("ok").orElseThrow().getStatus() == TaskStatus.COMPLETED);
         assertThat(repo.stagesOf("ok")).allSatisfy(s -> assertThat(s.getStatus()).isEqualTo(StageStatus.DONE));
+    }
+
+    @Test
+    void firstRunStillInvokesEveryStageHandler() {
+        insertTask("fresh");
+        runner.submit(repo.find("fresh").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("fresh").orElseThrow().getStatus() == TaskStatus.COMPLETED);
+        assertThat(downloadInvocations.get()).isEqualTo(1);
+        assertThat(extractInvocations.get()).isEqualTo(1);
+    }
+
+    @Test
+    void retryResumesFromFirstNonDoneStageAndRestoresUpstreamArtifact() {
+        insertTask("retry");
+        failures.put(StageType.AUDIO_EXTRACT, new RuntimeException("转码崩溃"));
+        runner.submit(repo.find("retry").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("retry").orElseThrow().getStatus() == TaskStatus.FAILED);
+        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> !runner.isInFlight("retry"));
+        int downloadsBefore = downloadInvocations.get();
+
+        failures.remove(StageType.AUDIO_EXTRACT);
+        repo.resetTaskForRetry("retry");
+        repo.resetStagesForRetry("retry");
+        runner.submit(repo.find("retry").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("retry").orElseThrow().getStatus() == TaskStatus.COMPLETED);
+
+        assertThat(downloadInvocations.get()).isEqualTo(downloadsBefore);
+        assertThat(extractSawDownloadArtifact).isTrue();
+        var stages = repo.stagesOf("retry");
+        assertThat(stages.get(0).getStatus()).isEqualTo(StageStatus.DONE);
+        assertThat(stages.get(0).getArtifactPath()).isEqualTo("source.mp4");
+        assertThat(stages.get(1).getStatus()).isEqualTo(StageStatus.DONE);
     }
 
     @Test

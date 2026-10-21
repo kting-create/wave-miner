@@ -112,12 +112,21 @@ public class TaskRunner implements PipelineService.Runner {
                         ? TaskContext.findUploadedFile(store.taskDir(taskId)) : null,
                 cancel);
 
+        Map<StageType, TaskStage> stored = repo.stagesOf(taskId).stream()
+                .collect(Collectors.toMap(TaskStage::getStageType, Function.identity()));
+
         for (StageType type : task.getStages()) {
             if (cancel.get()) {
                 markRemainingSkipped(task, type);
                 repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
                 repo.updateFinishedAt(taskId, Instant.now());
                 return;
+            }
+            TaskStage previous = stored.get(type);
+            if (previous != null && previous.getStatus() == StageStatus.DONE
+                    && previous.getArtifactPath() != null && !previous.getArtifactPath().isBlank()) {
+                ctx.putArtifact(type, previous.getArtifactPath());
+                continue;
             }
             StageHandler handler = handlers.get(type);
             if (handler == null) {
