@@ -4,3 +4,4 @@ frontend/dist/
 data/
 .DS_Store
 *.log
+.idea/
