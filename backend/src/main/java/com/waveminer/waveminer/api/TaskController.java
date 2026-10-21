@@ -86,11 +86,14 @@ public class TaskController {
             @RequestParam(required = false) String url,
             @RequestParam(required = false) MultipartFile file,
             @RequestParam String stages,
-            @RequestParam(required = false) String language) {
+            @RequestParam(required = false) String language,
+            @RequestParam(required = false) String engineId,
+            @RequestParam(defaultValue = "false") String diarize) {
         List<StageType> stageList = Arrays.stream(stages.split(","))
                 .map(String::trim).filter(s -> !s.isEmpty())
                 .map(TaskController::parseStage).toList();
-        Task t = pipeline.create(new PipelineService.CreateTaskCommand(url, file, stageList, language));
+        Task t = pipeline.create(new PipelineService.CreateTaskCommand(
+                url, file, stageList, language, engineId, Boolean.parseBoolean(diarize)));
         return toView(t);
     }
 
@@ -288,6 +291,7 @@ public class TaskController {
                 .toList();
         return new TaskViews.TaskView(t.getId(), t.getTitle(), t.getSourceType().name(), t.getSourceRef(),
                 t.getStatus().name(), t.getErrorMessage(),
+                t.getEngineId(), t.getLanguage(), t.isDiarize(),
                 iso(t.getCreatedAt()), iso(t.getStartedAt()), iso(t.getFinishedAt()), stages, arts);
     }
 

@@ -124,6 +124,21 @@ class TaskRepositoryTest {
     }
 
     @Test
+    void engineFieldsRoundTrip() {
+        Task t = newTask("t6e");
+        t.setEngineId("minimax");
+        t.setLanguage("zh");
+        t.setDiarize(true);
+        repo.insert(t);
+        repo.insertStages("t6e", t.getStages());
+
+        Task found = repo.find("t6e").orElseThrow();
+        assertThat(found.getEngineId()).isEqualTo("minimax");
+        assertThat(found.getLanguage()).isEqualTo("zh");
+        assertThat(found.isDiarize()).isTrue();
+    }
+
+    @Test
     void findMissing() {
         assertThat(repo.find("nope")).isEmpty();
     }

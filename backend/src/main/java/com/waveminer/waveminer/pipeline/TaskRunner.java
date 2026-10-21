@@ -110,7 +110,10 @@ public class TaskRunner implements PipelineService.Runner {
                 task.getSourceType() == SourceType.URL ? task.getSourceRef() : null,
                 task.getSourceType() == SourceType.UPLOAD
                         ? TaskContext.findUploadedFile(store.taskDir(taskId)) : null,
-                cancel);
+                cancel,
+                task.getEngineId(),
+                task.getLanguage(),
+                task.isDiarize());
 
         Map<StageType, TaskStage> stored = repo.stagesOf(taskId).stream()
                 .collect(Collectors.toMap(TaskStage::getStageType, Function.identity()));

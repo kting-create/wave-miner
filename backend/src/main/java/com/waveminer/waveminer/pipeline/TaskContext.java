@@ -13,14 +13,25 @@ public final class TaskContext {
     private final String sourceUrl;
     private final Path uploadedFile;
     private final AtomicBoolean cancel;
+    private final String engineId;
+    private final String language;
+    private final boolean diarize;
     private final Map<StageType, String> artifacts = new EnumMap<>(StageType.class);
 
     public TaskContext(String taskId, Path dir, String sourceUrl, Path uploadedFile, AtomicBoolean cancel) {
+        this(taskId, dir, sourceUrl, uploadedFile, cancel, null, "auto", false);
+    }
+
+    public TaskContext(String taskId, Path dir, String sourceUrl, Path uploadedFile, AtomicBoolean cancel,
+                       String engineId, String language, boolean diarize) {
         this.taskId = taskId;
         this.dir = dir;
         this.sourceUrl = sourceUrl;
         this.uploadedFile = uploadedFile;
         this.cancel = cancel;
+        this.engineId = engineId;
+        this.language = language == null || language.isBlank() ? "auto" : language;
+        this.diarize = diarize;
     }
     public String taskId() { return taskId; }
 
@@ -31,6 +42,12 @@ public final class TaskContext {
     public Optional<Path> uploadedFile() { return Optional.ofNullable(uploadedFile); }
 
     public boolean cancelRequested() { return cancel.get(); }
+
+    public String engineId() { return engineId; }
+
+    public String language() { return language; }
+
+    public boolean diarize() { return diarize; }
 
     public Path artifactOf(StageType type) {
         String name = artifacts.get(type);

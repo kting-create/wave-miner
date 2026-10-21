@@ -23,10 +23,11 @@ public class TaskRepository {
 
     @Transactional
     public Task insert(Task t) {
-        jdbc.update("INSERT INTO task(id,source_type,source_ref,title,stages,status,error_message,created_at,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        jdbc.update("INSERT INTO task(id,source_type,source_ref,title,stages,status,error_message,created_at,started_at,finished_at,engine_id,language,diarize) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 t.getId(), t.getSourceType().name(), t.getSourceRef(), t.getTitle(),
                 joinStages(t.getStages()), t.getStatus().name(), t.getErrorMessage(),
-                ts(t.getCreatedAt()), ts(t.getStartedAt()), ts(t.getFinishedAt()));
+                ts(t.getCreatedAt()), ts(t.getStartedAt()), ts(t.getFinishedAt()),
+                t.getEngineId(), t.getLanguage(), t.isDiarize() ? 1 : 0);
         return t;
     }
 
@@ -126,6 +127,9 @@ public class TaskRepository {
         t.setCreatedAt(parseTs(rs.getString("created_at")));
         t.setStartedAt(parseTs(rs.getString("started_at")));
         t.setFinishedAt(parseTs(rs.getString("finished_at")));
+        t.setEngineId(rs.getString("engine_id"));
+        t.setLanguage(rs.getString("language"));
+        t.setDiarize(rs.getInt("diarize") != 0);
         return t;
     }
 

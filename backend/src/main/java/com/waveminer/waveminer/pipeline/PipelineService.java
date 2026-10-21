@@ -1,6 +1,9 @@
 package com.waveminer.waveminer.pipeline;
 
 import com.waveminer.waveminer.config.AppProperties;
+import com.waveminer.waveminer.engine.EngineException;
+import com.waveminer.waveminer.engine.EngineRegistry;
+import com.waveminer.waveminer.engine.TranscriptionEngine;
 import com.waveminer.waveminer.media.MediaTypes;
 import com.waveminer.waveminer.store.ArtifactStore;
 import java.io.File;
@@ -23,7 +26,8 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 public class PipelineService {
 
-    public record CreateTaskCommand(String url, MultipartFile file, List<StageType> stages, String language) {}
+    public record CreateTaskCommand(String url, MultipartFile file, List<StageType> stages,
+                                    String language, String engineId, boolean diarize) {}
 
     public interface Runner {
         void submit(Task task);
@@ -31,15 +35,17 @@ public class PipelineService {
 
     private final TaskRepository repo;
     private final ArtifactStore artifacts;
+    private final EngineRegistry registry;
     private final AppProperties props;
     private final Runner runner;
 
     LongPredicate diskSpaceCheck;
 
-    public PipelineService(TaskRepository repo, ArtifactStore artifacts,
+    public PipelineService(TaskRepository repo, ArtifactStore artifacts, EngineRegistry registry,
                            AppProperties props, Runner runner) {
         this.repo = repo;
         this.artifacts = artifacts;
+        this.registry = registry;
         this.props = props;
         this.runner = Objects.requireNonNull(runner, "TaskRunner 未注入");
         this.diskSpaceCheck = required -> {
@@ -67,6 +73,9 @@ public class PipelineService {
         t.setStages(List.copyOf(new LinkedHashSet<>(cmd.stages())));
         t.setStatus(TaskStatus.PENDING);
         t.setCreatedAt(Instant.now());
+        t.setEngineId(cmd.engineId() == null || cmd.engineId().isBlank() ? "minimax" : cmd.engineId().trim());
+        t.setLanguage(cmd.language() == null || cmd.language().isBlank() ? "auto" : cmd.language().trim());
+        t.setDiarize(cmd.diarize());
 
         if (!isUrl) {
             if (!diskSpaceCheck.test(cmd.file().getSize() * 3 / 2)) {
@@ -125,6 +134,19 @@ public class PipelineService {
             }
             if (stages.contains(StageType.AUDIO_EXTRACT) && !MediaTypes.isVideo(filename)) {
                 throw new IllegalArgumentException("提取音频需要视频文件（当前为 ." + ext + "）");
+            }
+        }
+        if (stages.contains(StageType.TRANSCRIBE)) {
+            String engineId = cmd.engineId() == null || cmd.engineId().isBlank() ? "minimax" : cmd.engineId().trim();
+            TranscriptionEngine engine;
+            try {
+                engine = registry.get(engineId);
+            } catch (EngineException e) {
+                throw new IllegalArgumentException("未知转写引擎: " + engineId);
+            }
+            String lang = cmd.language() == null || cmd.language().isBlank() ? "auto" : cmd.language().trim();
+            if (!"auto".equals(lang) && !engine.info().languages().contains(lang)) {
+                throw new IllegalArgumentException("该引擎不支持的语言: " + lang);
             }
         }
     }

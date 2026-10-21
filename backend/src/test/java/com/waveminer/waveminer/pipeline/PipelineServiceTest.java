@@ -8,6 +8,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.mock.web.MockMultipartFile;
@@ -37,19 +38,28 @@ class PipelineServiceTest {
         // 内存库互不可见；用临时文件库保证跨连接可见
         var ds = new DriverManagerDataSource("jdbc:sqlite:" + tmp.resolve("pipeline-test.db"));
         var jdbc = new JdbcTemplate(ds);
-        jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, engine_id TEXT, language TEXT, diarize INTEGER)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS task_stage (task_id TEXT NOT NULL, stage_type TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, artifact_path TEXT, PRIMARY KEY (task_id, stage_type))");
-        service = new PipelineService(new TaskRepository(jdbc), new ArtifactStore(props), props, runner);
+        com.waveminer.waveminer.engine.TranscriptionEngine fake = Mockito.mock(com.waveminer.waveminer.engine.TranscriptionEngine.class);
+        Mockito.when(fake.id()).thenReturn("fake-engine");
+        Mockito.when(fake.info()).thenReturn(new com.waveminer.waveminer.engine.EngineInfo(
+                "fake-engine", "假引擎", 500, 1024, true, List.of("zh")));
+        @SuppressWarnings("unchecked")
+        org.springframework.beans.factory.ObjectProvider<com.waveminer.waveminer.engine.TranscriptionEngine> provider =
+                Mockito.mock(org.springframework.beans.factory.ObjectProvider.class);
+        Mockito.when(provider.orderedStream()).thenReturn(java.util.stream.Stream.of(fake));
+        service = new PipelineService(new TaskRepository(jdbc), new ArtifactStore(props),
+                new com.waveminer.waveminer.engine.EngineRegistry(provider), props, runner);
     }
 
     private CreateTaskCommand url(String url, List<StageType> stages) {
-        return new CreateTaskCommand(url, null, stages, null);
+        return new CreateTaskCommand(url, null, stages, null, null, false);
     }
 
     private CreateTaskCommand upload(String filename, List<StageType> stages) {
         return new CreateTaskCommand(null,
                 new MockMultipartFile("file", filename, "application/octet-stream", new byte[]{1, 2, 3}),
-                stages, null);
+                stages, null, null, false);
     }
 
     @Test
@@ -123,7 +133,25 @@ class PipelineServiceTest {
         assertThatThrownBy(() -> service.create(new CreateTaskCommand(
                 "https://e.com/a",
                 new MockMultipartFile("file", "a.mp4", "video/mp4", new byte[]{1}),
-                List.of(StageType.DOWNLOAD), null)))
+                List.of(StageType.DOWNLOAD), null, null, false)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void unknownEngineRejected() {
+        assertThatThrownBy(() -> service.create(new CreateTaskCommand(
+                "https://e.com/a.mp4", null,
+                List.of(StageType.DOWNLOAD, StageType.TRANSCRIBE), null, "no-such", false)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("未知转写引擎");
+    }
+
+    @Test
+    void unsupportedLanguageRejected() {
+        assertThatThrownBy(() -> service.create(new CreateTaskCommand(
+                "https://e.com/a.mp4", null,
+                List.of(StageType.DOWNLOAD, StageType.TRANSCRIBE), "xx", "fake-engine", false)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不支持的语言");
     }
 }

@@ -14,6 +14,9 @@ public class Task {
     private Instant createdAt;
     private Instant startedAt;
     private Instant finishedAt;
+    private String engineId;
+    private String language;
+    private boolean diarize;
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
@@ -35,4 +38,10 @@ public class Task {
     public void setStartedAt(Instant startedAt) { this.startedAt = startedAt; }
     public Instant getFinishedAt() { return finishedAt; }
     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
+    public String getEngineId() { return engineId; }
+    public void setEngineId(String v) { this.engineId = v; }
+    public String getLanguage() { return language; }
+    public void setLanguage(String v) { this.language = v; }
+    public boolean isDiarize() { return diarize; }
+    public void setDiarize(boolean v) { this.diarize = v; }
 }

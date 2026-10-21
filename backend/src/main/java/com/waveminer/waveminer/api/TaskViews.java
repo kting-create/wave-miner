@@ -12,6 +12,7 @@ public final class TaskViews {
 
     public record TaskView(String id, String title, String sourceType, String sourceRef,
                            String status, String errorMessage,
+                           String engineId, String language, boolean diarize,
                            String createdAt, String startedAt, String finishedAt,
                            List<StageView> stages, List<ArtifactView> artifacts) {}
 
