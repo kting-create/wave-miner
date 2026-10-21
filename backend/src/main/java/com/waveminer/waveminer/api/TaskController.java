@@ -150,12 +150,16 @@ public class TaskController {
         return Map.of("ok", true);
     }
 
-    @GetMapping("/{id}/artifacts/{name:.+}")
+    /** {*name} 捕获剩余路径段（可含 /，如 engine_raw/probe.json）；捕获值自带前导 /，需剥掉再校验 */
+    @GetMapping("/{id}/artifacts/{*name}")
     public ResponseEntity<Object> artifact(@PathVariable String id,
                                            @PathVariable String name,
                                            HttpServletRequest request) throws IOException {
         requireValidId(id);
         find(id); // 任务不存在 → 404，且不触发目录创建（taskDir 会惰性建目录）
+        if (name.startsWith("/")) {
+            name = name.substring(1);
+        }
         if (!artifacts.isAllowedArtifactName(name)) {
             throw new IllegalArgumentException("非法的产物名称");
         }

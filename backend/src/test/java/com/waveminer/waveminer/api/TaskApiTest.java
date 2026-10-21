@@ -195,6 +195,36 @@ class TaskApiTest {
     }
 
     @Test
+    void artifactWithMultiSegmentNameDownloads() throws Exception {
+        Mockito.doAnswer(inv -> {
+            Path out = inv.getArgument(1);
+            Files.writeString(out, "audio");
+            return null;
+        }).when(ffmpeg).extractAudio(Mockito.any(), Mockito.any(), Mockito.any());
+        Mockito.when(ffmpeg.hasAudioStream(Mockito.any())).thenReturn(true);
+
+        MvcResult created = mvc.perform(multipart("/api/tasks")
+                        .file(mp4())
+                        .param("stages", "AUDIO_EXTRACT"))
+                .andExpect(status().isOk()).andReturn();
+        String id = waitCompleted(createTask(created));
+
+        Path engineRaw = store.taskDir(id).resolve("engine_raw");
+        Files.createDirectories(engineRaw);
+        Files.writeString(engineRaw.resolve("probe.json"), "{\"raw\":true}");
+
+        // 多段产物名（T8 引擎原始响应存档），PathPatternParser 下 {name:.+} 只匹配单段
+        mvc.perform(get("/api/tasks/" + id + "/artifacts/engine_raw/probe.json"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.raw").value(true));
+
+        // 回归：单段产物不受影响
+        mvc.perform(get("/api/tasks/" + id + "/artifacts/audio.m4a"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Accept-Ranges", "bytes"));
+    }
+
+    @Test
     void artifactTraversalRejected() throws Exception {
         mvc.perform(get("/api/tasks/whatever/artifacts/..%2F..%2Fsecret.txt"))
                 .andExpect(status().is4xxClientError());
