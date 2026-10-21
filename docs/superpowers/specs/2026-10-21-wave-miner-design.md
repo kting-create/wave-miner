@@ -17,7 +17,7 @@ wave-miner 是面向个人/小团队的音视频内容挖掘 Web 应用。输入
 
 | 层 | 选型 | 说明 |
 |---|---|---|
-| 后端 | Java 21 + Spring Boot 3.x (Maven) | 单体应用，一个 jar 部署 |
+| 后端 | Java 21 + Spring Boot 4.1.x (Maven) | 单体应用，一个 jar 部署。原定 3.x，因 3.x OSS 支持已于 2026-06 结束，改用当前稳定 4.x（API 兼容面一致，虚拟线程支持相同） |
 | 任务执行 | JDK 21 虚拟线程 | IO 密集（进程调用+HTTP），虚拟线程最契合；用 `Semaphore` 限制并发（默认 2，可配置） |
 | 持久化 | SQLite（`sqlite-jdbc`）+ Spring JDBC | 单文件零运维；表 `task`、`task_stage`、`app_setting` |
 | 产物存储 | 本地磁盘 `data/tasks/{taskId}/` | 与 SQLite 分离，可整体备份 |
@@ -35,7 +35,7 @@ wave-miner 是面向个人/小团队的音视频内容挖掘 Web 应用。输入
 └──────────────────┬───────────────────────────────────┘
                    │ REST + SSE(进度)
 ┌──────────────────▼───────────────────────────────────┐
-│  Spring Boot 3 (Java 21)                              │
+│  Spring Boot 4.1 (Java 21)                              │
 │  ├─ api/        TaskController, SettingController     │
 │  ├─ pipeline/   PipelineService(编排), TaskExecutor   │
 │  ├─ stage/      DownloadStage / AudioExtractStage /   │
