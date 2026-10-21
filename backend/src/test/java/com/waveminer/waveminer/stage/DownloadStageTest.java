@@ -37,11 +37,11 @@ class DownloadStageTest {
             Path dir = inv.getArgument(1);
             Files.writeString(dir.resolve("source.mp4"), "v");
             return null;
-        }).when(yt).download(eq("https://e.com/a"), any());
+        }).when(yt).download(eq("https://e.com/a"), any(), any());
 
         new DownloadStage(yt).run(c);
 
-        verify(yt).download(eq("https://e.com/a"), any());
+        verify(yt).download(eq("https://e.com/a"), any(), any());
         assertThat(c.artifactOf(StageType.DOWNLOAD)).hasFileName("source.mp4");
     }
 
@@ -49,7 +49,7 @@ class DownloadStageTest {
     void fallsBackToDirectDownload() throws Exception {
         TaskContext c = ctx("t2", "https://cdn.e.com/a.mp4");
         YtDlpService yt = mock(YtDlpService.class);
-        doThrow(new ProcessFailedException("yt-dlp 失败")).when(yt).download(any(), any());
+        doThrow(new ProcessFailedException("yt-dlp 失败")).when(yt).download(any(), any(), any());
         doAnswer(inv -> {
             Path dir = inv.getArgument(1);
             Files.writeString(dir.resolve("source.mp4"), "v");
@@ -66,7 +66,7 @@ class DownloadStageTest {
     void directFallbackFailureStillFails() throws Exception {
         TaskContext c = ctx("t3", "https://cdn.e.com/a.mp4");
         YtDlpService yt = mock(YtDlpService.class);
-        doThrow(new ProcessFailedException("yt-dlp 失败")).when(yt).download(any(), any());
+        doThrow(new ProcessFailedException("yt-dlp 失败")).when(yt).download(any(), any(), any());
         doThrow(new ProcessFailedException("直链也失败")).when(yt).directDownload(any(), any());
 
         assertThatThrownBy(() -> new DownloadStage(yt).run(c))
@@ -78,7 +78,7 @@ class DownloadStageTest {
     void nonDirectUrlYtDlpFailurePropagates() throws Exception {
         TaskContext c = ctx("t4", "https://www.bilibili.com/video/BV1x");
         YtDlpService yt = mock(YtDlpService.class);
-        doThrow(new ProcessFailedException("平台下载失败")).when(yt).download(any(), any());
+        doThrow(new ProcessFailedException("平台下载失败")).when(yt).download(any(), any(), any());
 
         assertThatThrownBy(() -> new DownloadStage(yt).run(c))
                 .isInstanceOf(ProcessFailedException.class)
@@ -98,7 +98,7 @@ class DownloadStageTest {
     void noSourceFileAfterDownloadFails() throws Exception {
         TaskContext c = ctx("t6", "https://e.com/a");
         YtDlpService yt = mock(YtDlpService.class);
-        doNothing().when(yt).download(any(), any());
+        doNothing().when(yt).download(any(), any(), any());
 
         assertThatThrownBy(() -> new DownloadStage(yt).run(c))
                 .isInstanceOf(IllegalStateException.class)

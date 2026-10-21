@@ -13,11 +13,16 @@ import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.BooleanSupplier;
 
 public class YtDlpService {
 
     public interface Runner {
-        ProcessResult run(List<String> command, Duration timeout);
+        ProcessResult run(List<String> command, Duration timeout, BooleanSupplier cancelSignal);
+
+        default ProcessResult run(List<String> command, Duration timeout) {
+            return run(command, timeout, null);
+        }
     }
 
     private final Runner runner;
@@ -36,7 +41,11 @@ public class YtDlpService {
     }
 
     public void download(String url, Path dir) {
-        ProcessResult r = runner.run(downloadCommand(url, dir), props.processTimeout());
+        download(url, dir, null);
+    }
+
+    public void download(String url, Path dir, BooleanSupplier cancelSignal) {
+        ProcessResult r = runner.run(downloadCommand(url, dir), props.processTimeout(), cancelSignal);
         if (r.exitCode() != 0) {
             throw new ProcessFailedException("yt-dlp 下载失败:\n" + tail(r.output()));
         }

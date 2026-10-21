@@ -69,7 +69,7 @@ class TaskApiTest {
             Path out = inv.getArgument(1);
             Files.writeString(out, "audio");
             return null;
-        }).when(ffmpeg).extractAudio(Mockito.any(), Mockito.any());
+        }).when(ffmpeg).extractAudio(Mockito.any(), Mockito.any(), Mockito.any());
         Mockito.when(ffmpeg.hasAudioStream(Mockito.any())).thenReturn(true);
 
         MvcResult created = mvc.perform(multipart("/api/tasks")
@@ -96,7 +96,7 @@ class TaskApiTest {
             Path dir = inv.getArgument(1);
             Files.writeString(dir.resolve("source.mp4"), "v");
             return null;
-        }).when(ytDlp).download(Mockito.anyString(), Mockito.any());
+        }).when(ytDlp).download(Mockito.anyString(), Mockito.any(), Mockito.any());
 
         MvcResult created = mvc.perform(multipart("/api/tasks")
                         .param("url", "https://example.com/watch/1")
@@ -137,7 +137,7 @@ class TaskApiTest {
             Path dir = inv.getArgument(1);
             Files.writeString(dir.resolve("source.mp4"), "v");
             return null;
-        }).when(ytDlp).download(Mockito.anyString(), Mockito.any());
+        }).when(ytDlp).download(Mockito.anyString(), Mockito.any(), Mockito.any());
 
         MvcResult created = mvc.perform(multipart("/api/tasks")
                         .param("url", "https://example.com/bad-name")
@@ -175,7 +175,7 @@ class TaskApiTest {
             Path dir = inv.getArgument(1);
             Files.write(dir.resolve("source.mp4"), new byte[1000]);
             return null;
-        }).when(ytDlp).download(Mockito.anyString(), Mockito.any());
+        }).when(ytDlp).download(Mockito.anyString(), Mockito.any(), Mockito.any());
 
         MvcResult created = mvc.perform(multipart("/api/tasks")
                         .param("url", "https://example.com/x.mp4")

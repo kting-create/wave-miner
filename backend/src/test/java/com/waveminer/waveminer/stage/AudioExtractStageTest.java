@@ -39,7 +39,7 @@ class AudioExtractStageTest {
         doAnswer(inv -> {
             Files.writeString(c.dir().resolve("audio.m4a"), "a");
             return null;
-        }).when(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")));
+        }).when(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")), any());
 
         new AudioExtractStage(ffmpeg).run(c);
 
@@ -57,7 +57,7 @@ class AudioExtractStageTest {
         doAnswer(inv -> {
             Files.writeString(dir.resolve("audio.m4a"), "a");
             return null;
-        }).when(ffmpeg).extractAudio(any(), any());
+        }).when(ffmpeg).extractAudio(any(), any(), any());
 
         new AudioExtractStage(ffmpeg).run(c);
 
@@ -84,7 +84,7 @@ class AudioExtractStageTest {
         assertThatThrownBy(() -> new AudioExtractStage(ffmpeg).run(c))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("该视频不包含音轨，无法提取音频");
-        verify(ffmpeg, never()).extractAudio(any(), any());
+        verify(ffmpeg, never()).extractAudio(any(), any(), any());
     }
 
     @Test
@@ -98,11 +98,11 @@ class AudioExtractStageTest {
         doAnswer(inv -> {
             Files.writeString(c.dir().resolve("audio.m4a"), "a");
             return null;
-        }).when(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")));
+        }).when(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")), any());
 
         new AudioExtractStage(ffmpeg).run(c);
 
-        verify(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")));
+        verify(ffmpeg).extractAudio(eq(video), eq(c.dir().resolve("audio.m4a")), any());
         assertThat(c.artifactOf(StageType.AUDIO_EXTRACT)).hasFileName("audio.m4a");
     }
 }

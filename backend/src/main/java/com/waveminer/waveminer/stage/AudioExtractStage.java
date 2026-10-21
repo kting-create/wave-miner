@@ -1,8 +1,10 @@
 package com.waveminer.waveminer.stage;
 
 import com.waveminer.waveminer.media.FfmpegService;
+import com.waveminer.waveminer.media.ProcessFailedException;
 import com.waveminer.waveminer.pipeline.StageHandler;
 import com.waveminer.waveminer.pipeline.StageType;
+import com.waveminer.waveminer.pipeline.TaskCancelledException;
 import com.waveminer.waveminer.pipeline.TaskContext;
 import java.nio.file.Path;
 import org.springframework.stereotype.Component;
@@ -30,7 +32,17 @@ public class AudioExtractStage implements StageHandler {
             throw new IllegalStateException("该视频不包含音轨，无法提取音频");
         }
         Path out = ctx.dir().resolve("audio.m4a");
-        ffmpeg.extractAudio(input, out);
+        try {
+            ffmpeg.extractAudio(input, out, ctx::cancelRequested);
+        } catch (ProcessFailedException e) {
+            if (ctx.cancelRequested()) {
+                throw new TaskCancelledException();
+            }
+            throw e;
+        }
+        if (ctx.cancelRequested()) {
+            throw new TaskCancelledException();
+        }
         ctx.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
     }
 }

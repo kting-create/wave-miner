@@ -33,6 +33,7 @@ class TaskRunnerTest {
     private final AtomicInteger downloadInvocations = new AtomicInteger();
     private final AtomicInteger extractInvocations = new AtomicInteger();
     private volatile boolean extractSawDownloadArtifact;
+    private volatile boolean downloadWaitsForCancel;
 
     @BeforeEach
     void setUp() {
@@ -59,6 +60,17 @@ class TaskRunnerTest {
                         Thread.currentThread().interrupt();
                         throw new RuntimeException(e);
                     }
+                }
+                if (downloadWaitsForCancel) {
+                    while (!ctx.cancelRequested()) {
+                        try {
+                            Thread.sleep(50);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(e);
+                        }
+                    }
+                    throw new TaskCancelledException();
                 }
                 try {
                     Files.writeString(ctx.dir().resolve("source.mp4"), "v");
@@ -160,6 +172,22 @@ class TaskRunnerTest {
         runner.submit(repo.find("cc").orElseThrow());
         Awaitility.await().atMost(5, TimeUnit.SECONDS)
                 .until(() -> repo.find("cc").orElseThrow().getStatus() == TaskStatus.CANCELLED);
+    }
+
+    @Test
+    void cancelDuringRunningStageMarksCancelledWithFailedStage() throws Exception {
+        insertTask("cx");
+        downloadWaitsForCancel = true;
+        runner.submit(repo.find("cx").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.stagesOf("cx").get(0).getStatus() == StageStatus.RUNNING);
+        assertThat(runner.cancel("cx")).isTrue();
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("cx").orElseThrow().getStatus() == TaskStatus.CANCELLED);
+        var stages = repo.stagesOf("cx");
+        assertThat(stages.get(0).getStatus()).isEqualTo(StageStatus.FAILED);
+        assertThat(stages.get(0).getDetail()).isEqualTo("已取消");
+        Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> !runner.isInFlight("cx"));
     }
 
     @Test

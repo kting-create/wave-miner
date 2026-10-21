@@ -136,6 +136,11 @@ public class TaskRunner implements PipelineService.Runner {
             repo.updateStage(taskId, type, StageStatus.RUNNING, null, null);
             try {
                 handler.run(ctx);
+            } catch (TaskCancelledException e) {
+                repo.updateStage(taskId, type, StageStatus.FAILED, "已取消", null);
+                repo.updateTaskStatus(taskId, TaskStatus.CANCELLED, null);
+                repo.updateFinishedAt(taskId, Instant.now());
+                return;
             } catch (Exception e) {
                 fail(taskId, type, e.getMessage() == null ? e.toString() : e.getMessage());
                 return;

@@ -4,6 +4,7 @@ import com.waveminer.waveminer.media.ProcessFailedException;
 import com.waveminer.waveminer.media.YtDlpService;
 import com.waveminer.waveminer.pipeline.StageHandler;
 import com.waveminer.waveminer.pipeline.StageType;
+import com.waveminer.waveminer.pipeline.TaskCancelledException;
 import com.waveminer.waveminer.pipeline.TaskContext;
 import com.waveminer.waveminer.store.ArtifactStore;
 import java.nio.file.Path;
@@ -26,12 +27,18 @@ public class DownloadStage implements StageHandler {
             throw new IllegalStateException("下载功能需要视频链接");
         }
         try {
-            ytDlp.download(url, ctx.dir());
+            ytDlp.download(url, ctx.dir(), ctx::cancelRequested);
         } catch (ProcessFailedException e) {
+            if (ctx.cancelRequested()) {
+                throw new TaskCancelledException();
+            }
             if (!YtDlpService.isDirectMediaUrl(url)) {
                 throw e;
             }
             ytDlp.directDownload(url, ctx.dir());
+        }
+        if (ctx.cancelRequested()) {
+            throw new TaskCancelledException();
         }
         Path source = ArtifactStore.findSourceFile(ctx.dir())
                 .orElseThrow(() -> new IllegalStateException("下载完成但未找到产物文件"));

@@ -4,13 +4,18 @@ import com.waveminer.waveminer.config.AppProperties;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 public class FfmpegService {
 
     public interface Runner {
-        ProcessResult run(List<String> command, Duration timeout);
+        ProcessResult run(List<String> command, Duration timeout, BooleanSupplier cancelSignal);
+
+        default ProcessResult run(List<String> command, Duration timeout) {
+            return run(command, timeout, null);
+        }
     }
 
     private final Runner runner;
@@ -65,7 +70,11 @@ public class FfmpegService {
     }
 
     public void extractAudio(Path in, Path out) {
-        ProcessResult r = runner.run(extractAudioCommand(in, out), props.processTimeout());
+        extractAudio(in, out, null);
+    }
+
+    public void extractAudio(Path in, Path out, BooleanSupplier cancelSignal) {
+        ProcessResult r = runner.run(extractAudioCommand(in, out), props.processTimeout(), cancelSignal);
         if (r.exitCode() != 0) {
             throw new ProcessFailedException("ffmpeg 提取音频失败:\n" + tail(r.output()));
         }

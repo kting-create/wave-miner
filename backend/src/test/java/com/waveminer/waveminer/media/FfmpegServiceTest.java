@@ -14,7 +14,7 @@ class FfmpegServiceTest {
     private List<String> lastCommand;
 
     private final FfmpegService service = new FfmpegService(
-            (command, timeout) -> {
+            (command, timeout, cancel) -> {
                 lastCommand = command;
                 if (command.get(0).equals("ffprobe")) {
                     return new ProcessResult(0, "{\"format\":{\"duration\":\"12.5\"}}");
@@ -42,7 +42,7 @@ class FfmpegServiceTest {
     @Test
     void probeFailsOnError() {
         FfmpegService failing = new FfmpegService(
-                (command, timeout) -> new ProcessResult(1, "Invalid data"), new AppProperties());
+                (command, timeout, cancel) -> new ProcessResult(1, "Invalid data"), new AppProperties());
         assertThatThrownBy(() -> failing.probeDurationSeconds(Path.of("/v/a.mp4")))
                 .isInstanceOf(ProcessFailedException.class)
                 .hasMessageContaining("ffprobe");
@@ -58,7 +58,7 @@ class FfmpegServiceTest {
     @Test
     void hasAudioStreamTrueWhenAudioTrackPresent() {
         FfmpegService withAudio = new FfmpegService(
-                (command, timeout) -> {
+                (command, timeout, cancel) -> {
                     lastCommand = command;
                     return new ProcessResult(0, "0\n");
                 }, new AppProperties());
@@ -73,14 +73,14 @@ class FfmpegServiceTest {
     @Test
     void hasAudioStreamFalseWhenNoAudioTrack() {
         FfmpegService noAudio = new FfmpegService(
-                (command, timeout) -> new ProcessResult(0, ""), new AppProperties());
+                (command, timeout, cancel) -> new ProcessResult(0, ""), new AppProperties());
         assertThat(noAudio.hasAudioStream(Path.of("/v/a.mp4"))).isFalse();
     }
 
     @Test
     void hasAudioStreamFailsOnError() {
         FfmpegService failing = new FfmpegService(
-                (command, timeout) -> new ProcessResult(1, "Invalid data"), new AppProperties());
+                (command, timeout, cancel) -> new ProcessResult(1, "Invalid data"), new AppProperties());
         assertThatThrownBy(() -> failing.hasAudioStream(Path.of("/v/a.mp4")))
                 .isInstanceOf(ProcessFailedException.class)
                 .hasMessageContaining("ffprobe");
