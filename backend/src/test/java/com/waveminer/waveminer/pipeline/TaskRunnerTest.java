@@ -1,0 +1,125 @@
+package com.waveminer.waveminer.pipeline;
+
+import com.waveminer.waveminer.store.ArtifactStore;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class TaskRunnerTest {
+
+    @TempDir
+    Path tmp;
+
+    private TaskRepository repo;
+    private TaskRunner runner;
+    private final Map<StageType, RuntimeException> failures = new ConcurrentHashMap<>();
+
+    @BeforeEach
+    void setUp() {
+        var jdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:sqlite:" + tmp.resolve("runner-test.db")));
+        jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS task_stage (task_id TEXT NOT NULL, stage_type TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, artifact_path TEXT, PRIMARY KEY (task_id, stage_type))");
+        repo = new TaskRepository(jdbc);
+        var props = new com.waveminer.waveminer.config.AppProperties();
+        props.setDataDir(tmp.toString());
+        var store = new ArtifactStore(props);
+        failures.clear();
+
+        StageHandler download = new StageHandler() {
+            @Override public StageType type() { return StageType.DOWNLOAD; }
+            @Override public void run(TaskContext ctx) {
+                if (failures.containsKey(StageType.DOWNLOAD)) throw failures.get(StageType.DOWNLOAD);
+                try {
+                    Files.writeString(ctx.dir().resolve("source.mp4"), "v");
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                ctx.putArtifact(StageType.DOWNLOAD, "source.mp4");
+            }
+        };
+        StageHandler extract = new StageHandler() {
+            @Override public StageType type() { return StageType.AUDIO_EXTRACT; }
+            @Override public void run(TaskContext ctx) {
+                if (failures.containsKey(StageType.AUDIO_EXTRACT)) throw failures.get(StageType.AUDIO_EXTRACT);
+                ctx.putArtifact(StageType.AUDIO_EXTRACT, "audio.m4a");
+            }
+        };
+        runner = new TaskRunner(props, List.of(download, extract), repo, store);
+    }
+
+    private Task insertTask(String id) {
+        Task t = new Task();
+        t.setId(id);
+        t.setSourceType(SourceType.URL);
+        t.setSourceRef("https://e.com/a.mp4");
+        t.setTitle("a.mp4");
+        t.setStages(List.of(StageType.DOWNLOAD, StageType.AUDIO_EXTRACT));
+        t.setStatus(TaskStatus.PENDING);
+        t.setCreatedAt(Instant.now());
+        repo.insert(t);
+        repo.insertStages(id, t.getStages());
+        return t;
+    }
+
+    @Test
+    void runsAllStagesToCompletion() {
+        insertTask("ok");
+        runner.submit(repo.find("ok").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("ok").orElseThrow().getStatus() == TaskStatus.COMPLETED);
+        assertThat(repo.stagesOf("ok")).allSatisfy(s -> assertThat(s.getStatus()).isEqualTo(StageStatus.DONE));
+    }
+
+    @Test
+    void failureInSecondStageKeepsFirstArtifactAndMarksFailed() {
+        insertTask("half");
+        failures.put(StageType.AUDIO_EXTRACT, new RuntimeException("转码崩溃"));
+        runner.submit(repo.find("half").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("half").orElseThrow().getStatus() == TaskStatus.FAILED);
+        var stages = repo.stagesOf("half");
+        assertThat(stages.get(0).getStatus()).isEqualTo(StageStatus.DONE);
+        assertThat(stages.get(0).getArtifactPath()).isEqualTo("source.mp4");
+        assertThat(stages.get(1).getStatus()).isEqualTo(StageStatus.FAILED);
+        assertThat(stages.get(1).getDetail()).contains("转码崩溃");
+        assertThat(repo.find("half").orElseThrow().getErrorMessage()).contains("转码崩溃");
+    }
+
+    @Test
+    void cancelBeforeRunMarksCancelled() {
+        insertTask("cc");
+        runner.cancel("cc");
+        runner.submit(repo.find("cc").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("cc").orElseThrow().getStatus() == TaskStatus.CANCELLED);
+    }
+
+    @Test
+    void missingHandlerFailsTask() {
+        insertTask("mh");
+        TaskRunner solo = new TaskRunner(new com.waveminer.waveminer.config.AppProperties(),
+                List.of(), repo, new ArtifactStore(props()));
+        solo.submit(repo.find("mh").orElseThrow());
+        Awaitility.await().atMost(5, TimeUnit.SECONDS)
+                .until(() -> repo.find("mh").orElseThrow().getStatus() == TaskStatus.FAILED);
+        assertThat(repo.find("mh").orElseThrow().getErrorMessage()).contains("处理器");
+    }
+
+    private com.waveminer.waveminer.config.AppProperties props() {
+        var props = new com.waveminer.waveminer.config.AppProperties();
+        props.setDataDir(tmp.toString());
+        return props;
+    }
+}
