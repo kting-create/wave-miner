@@ -39,7 +39,7 @@ class PipelineServiceTest {
         var jdbc = new JdbcTemplate(ds);
         jdbc.execute("CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_ref TEXT, title TEXT NOT NULL, stages TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS task_stage (task_id TEXT NOT NULL, stage_type TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, artifact_path TEXT, PRIMARY KEY (task_id, stage_type))");
-        service = new PipelineService(new TaskRepository(jdbc), new ArtifactStore(props), runner);
+        service = new PipelineService(new TaskRepository(jdbc), new ArtifactStore(props), props, runner);
     }
 
     private CreateTaskCommand url(String url, List<StageType> stages) {
@@ -66,6 +66,15 @@ class PipelineServiceTest {
         Task t = service.create(upload("my.mp4", List.of(StageType.AUDIO_EXTRACT)));
         assertThat(t.getSourceType()).isEqualTo(SourceType.UPLOAD);
         assertThat(t.getTitle()).isEqualTo("my.mp4");
+    }
+
+    @Test
+    void uploadRejectedWhenDiskSpaceInsufficient() {
+        service.setDiskSpaceCheck(required -> false);
+        assertThatThrownBy(() -> service.create(upload("my.mp4", List.of(StageType.AUDIO_EXTRACT))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("磁盘剩余空间不足，无法保存上传文件");
+        assertThat(runner.submitted).isEmpty();
     }
 
     @Test

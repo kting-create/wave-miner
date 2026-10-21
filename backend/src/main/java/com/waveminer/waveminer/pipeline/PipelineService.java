@@ -1,7 +1,9 @@
 package com.waveminer.waveminer.pipeline;
 
+import com.waveminer.waveminer.config.AppProperties;
 import com.waveminer.waveminer.media.MediaTypes;
 import com.waveminer.waveminer.store.ArtifactStore;
+import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
@@ -11,9 +13,10 @@ import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.lang.Nullable;
+import java.util.function.LongPredicate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -28,12 +31,28 @@ public class PipelineService {
 
     private final TaskRepository repo;
     private final ArtifactStore artifacts;
+    private final AppProperties props;
     private final Runner runner;
 
-    public PipelineService(TaskRepository repo, ArtifactStore artifacts, @Nullable Runner runner) {
+    LongPredicate diskSpaceCheck;
+
+    public PipelineService(TaskRepository repo, ArtifactStore artifacts,
+                           AppProperties props, Runner runner) {
         this.repo = repo;
         this.artifacts = artifacts;
-        this.runner = runner;
+        this.props = props;
+        this.runner = Objects.requireNonNull(runner, "TaskRunner 未注入");
+        this.diskSpaceCheck = required -> {
+            File dir = new File(props.getDataDir()).getAbsoluteFile();
+            while (!dir.exists() && dir.getParentFile() != null) {
+                dir = dir.getParentFile();
+            }
+            return dir.getUsableSpace() > required;
+        };
+    }
+
+    void setDiskSpaceCheck(LongPredicate check) {
+        this.diskSpaceCheck = check;
     }
 
     public Task create(CreateTaskCommand cmd) {
@@ -50,6 +69,9 @@ public class PipelineService {
         t.setCreatedAt(Instant.now());
 
         if (!isUrl) {
+            if (!diskSpaceCheck.test(cmd.file().getSize() * 3 / 2)) {
+                throw new IllegalArgumentException("磁盘剩余空间不足，无法保存上传文件");
+            }
             saveUpload(t.getId(), cmd.file());
         }
 
