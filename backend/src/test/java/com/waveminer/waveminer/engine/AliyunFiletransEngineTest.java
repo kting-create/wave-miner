@@ -111,6 +111,19 @@ class AliyunFiletransEngineTest {
     }
 
     @Test
+    void bucketDerivedFromUploadHostFirstDnsLabel() {
+        assertThat(AliyunFiletransEngine.ossBucketOf("https://dashscope-file-mgr.oss-cn-beijing.aliyuncs.com"))
+                .isEqualTo("dashscope-file-mgr");
+    }
+
+    @Test
+    void uploadHostWithoutDotFails() {
+        assertThatThrownBy(() -> AliyunFiletransEngine.ossBucketOf("http://localhost:9000/upload"))
+                .isInstanceOf(EngineException.class)
+                .hasMessageContaining("上传凭证的 upload_host 异常: http://localhost:9000/upload");
+    }
+
+    @Test
     void parsesTranscriptionSentences() {
         List<Segment> segments = AliyunFiletransEngine.parseTranscription(RESULT_JSON);
         assertThat(segments).containsExactly(
@@ -140,10 +153,10 @@ class AliyunFiletransEngineTest {
         return props;
     }
 
-    /** 全流程用例将 upload_host 指向 WireMock，避免测试请求真实 OSS 外网地址 */
+    /** 全流程用例将 upload_host 指向本机 WireMock（刻意用带点的 127.0.0.1，bucket 按 host 首段推导为 127），避免测试请求真实 OSS 外网地址 */
     private String hermeticPolicy(WireMockServer wire) {
         return POLICY_JSON.replace("https://dashscope-file-transfer.oss-cn-beijing.aliyuncs.com",
-                wire.baseUrl() + "/upload");
+                "http://127.0.0.1:" + wire.port() + "/upload");
     }
 
     @Test
@@ -195,7 +208,7 @@ class AliyunFiletransEngineTest {
             assertThat(submitEvent.getRequest().getHeader("X-DashScope-Async")).isEqualTo("enable");
             assertThat(submitEvent.getRequest().getHeader("Authorization")).isEqualTo("Bearer sk-aliyun");
             String submitBody = new String(submitEvent.getRequest().getBody());
-            assertThat(submitBody).contains("oss://asr/filetrans/2026-10-21/abc/a.m4a")
+            assertThat(submitBody).contains("oss://127/asr/filetrans/2026-10-21/abc/a.m4a")
                     .contains("language_hints").contains("diarization_enabled");
         } finally {
             wire.stop();
